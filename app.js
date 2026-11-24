@@ -1,11 +1,22 @@
 /* ===== 源自 H5 原型的完整交互逻辑（保留） ===== */
 
 /* ================= 状态 ================= */
+const DEMO_SCORE_HISTORY=[
+  {m:'9月月考',v:78,marks:[81,78,79,74]},
+  {m:'10月月考',v:82,marks:[85,80,84,79]},
+  {m:'期中',v:85,marks:[88,84,86,82]},
+  {m:'11月周测',v:88,marks:[90,89,87,86]}
+].map(({m,v,marks})=>({
+  m,v,demo:true,subjects:['数学','语文','英语','物理'].map((name,index)=>({name,score:marks[index],max:100}))
+}));
+
+
 const U = {
-  logged:false, onboarded:false,
+  logged:false, onboarded:false, scoreProfile:null,
   name:'', grade:'', gender:'男', school:'', identity:'中考', examDate:'', dailyH:'3',
   subjects:[], total:'', scores:{数学:88, 物理:82, 英语:85, 语文:90}, parentPhone:'',
   activated:false, activeCourse:'', activeSubject:'', activatedCourses:[], activatedSubjects:[], setupStep:0,
+  courseStudy:{},
   setup:{schoolProgress:'', textbook:'', nextExam:'', nextExamTime:'', subjectScore:'', plannerTime:'', remark:'',
          stars:[8,1,1,1], evalMethod:'', uploadCount:0, analysisDone:false, studyTime:'', studyDays:'',
          dayPlan:{}, callRemind:'是', planSaved:false},
@@ -13,7 +24,7 @@ const U = {
   checkins:[{date:'11-07', txt:'完成二次函数专项 20 题，整理错题 3 道', imgs:2}],
   manage:[{d:'11-06', t:'规划师致电回访', s:'调整学习计划：每晚增加 30 分钟英语阅读'},
           {d:'11-02', t:'月考成绩录入', s:'10 月月考 4 科成绩已建档'}],
-  scoresHis:[{m:'9月月考',v:78},{m:'10月月考',v:82},{m:'期中',v:85},{m:'11月周测',v:88}],
+  scoresHis:DEMO_SCORE_HISTORY.slice(),
 };
 const S = { mode:'评分', idx:0, ans:{}, records:[
   {d:'11-08', q:2, ok:false, kp:'垂径定理'},
@@ -49,6 +60,8 @@ const CHAPTERS = [
 
 /* ================= 路由 ================= */
 let stack = [], curTab = 'home', navDir = 'fwd';
+const parentScroll=[];
+let sidePageRoot=null;
 const screen = document.getElementById('screen');
 const tabbar = document.getElementById('tabbar');
 function setHTML(html, cls){
@@ -59,20 +72,29 @@ function setHTML(html, cls){
 function goTab(name){
   if(name==='courses') name='home';
   stack = []; navDir='fwd'; curTab = name;
-  const pages = {home:pageHome, discover:pageDiscover,  qa:pageQa, me:pageMe};
+  const pages = {home:pageHome, qa:pageQa, me:pageMe};
   setHTML(pages[name](), name==='qa'?'page-chat':'');
   tabbar.querySelectorAll('.tb').forEach(b=>b.classList.toggle('on', b.dataset.tab===name));
   tabbar.style.display='flex';
 }
 function pushPage(fn, dir){ navDir = dir||'fwd'; stack.push(fn); setHTML(fn()); tabbar.style.display='none'; }
 function popPage(){
-  stack.pop(); navDir='back';
-  if(!stack.length){ goTab(curTab==='discover'?'home':curTab); return; }
-  setHTML(stack[stack.length-1]());
+  if(!stack.length) return;
+  const top=parentScroll[stack.length-1]||0;
+  stack.pop();
+  parentScroll.length=stack.length;
+  navDir='back';
+  if(stack.length) setHTML(stack[stack.length-1]());
+  else goTab(curTab,sidePageRoot);
+  screen.scrollTop=top;
 }
-function refresh(){ navDir='back'; if(stack.length) setHTML(stack[stack.length-1]()); else goTab(curTab); }
+function goBack(){
+  if(stack[stack.length-1]===pageSetup2) setupBack(2);
+  else popPage();
+}
+function refresh(){ navDir='back'; if(stack.length) setHTML(stack[stack.length-1]()); else goTab(curTab,sidePageRoot); }
 function head(title, extra){
-  return '<div class="hd"><button type="button" class="backbtn" aria-label="返回上一页" onclick="popPage()"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button><b>'+title+'</b><span class="spacer"></span>'+(extra||'')+'</div>';
+  return '<div class="hd"><b>'+title+'</b><span class="spacer"></span>'+(extra||'')+'</div>';
 }
 function demoStart(){
   stack=[]; curTab='home'; navDir='fwd';
@@ -95,7 +117,9 @@ function openModal(html){
   document.getElementById('sheet').innerHTML = '<div class="grab"></div><button class="modal-x" onclick="event.stopPropagation();closeModal()" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>'+html;
   root.classList.add('show');
 }
-function closeModal(){ document.getElementById('modal-root').classList.remove('show'); }
+function closeModal(){
+  document.getElementById('modal-root').classList.remove('show');
+}
 
 /* ================= 图标 ================= */
 const IC = {
@@ -122,43 +146,55 @@ function arw(){return '<svg class="arw" viewBox="0 0 24 24"><path d="M9.5 5l7 7-
 
 /* ================= 图表 ================= */
 function lineChart(data, w, h){
+  if(!data.length) return '<p class="empty">暂无成绩记录</p>';
   const pad={l:34,r:14,t:16,b:26}, iw=w-pad.l-pad.r, ih=h-pad.t-pad.b;
-  const vs=data.map(d=>d.v), min=Math.min(...vs)-4, max=Math.max(...vs)+3;
-  const x=i=>pad.l+iw*i/(data.length-1), y=v=>pad.t+ih*(1-(v-min)/(max-min));
+  const vs=data.map(d=>d.v), min=Math.max(0,Math.min(...vs)-4), max=Math.min(100,Math.max(...vs)+3);
+  const x=i=>pad.l+(data.length>1?iw*i/(data.length-1):iw/2), y=v=>pad.t+ih*(1-(v-min)/(max-min));
   let grid='',labels='';
   [min,Math.round((min+max)/2),max].forEach(v=>{
     grid+='<line x1="'+pad.l+'" y1="'+y(v)+'" x2="'+(w-pad.r)+'" y2="'+y(v)+'" stroke="#ECEFF3"/>';
     labels+='<text x="'+(pad.l-7)+'" y="'+(y(v)+4)+'" text-anchor="end" font-size="9.5" fill="#9AA3B0">'+v+'</text>';
   });
   data.forEach((d,i)=>{
-    labels+='<text x="'+x(i)+'" y="'+(h-8)+'" text-anchor="middle" font-size="9.5" fill="#9AA3B0">'+d.m+'</text>';
+    labels+='<text x="'+x(i)+'" y="'+(h-8)+'" text-anchor="middle" font-size="9.5" fill="#9AA3B0">'+myText(d.m)+'</text>';
     labels+='<circle cx="'+x(i)+'" cy="'+y(d.v)+'" r="4" fill="#fff" stroke="#3D7EFF" stroke-width="2.2"/><text x="'+x(i)+'" y="'+(y(d.v)-9)+'" text-anchor="middle" font-size="10" font-weight="800" fill="#1B2430">'+d.v+'</text>';
   });
   let path=''; data.forEach((d,i)=>{ path+=(i?' L ':'M ')+x(i)+' '+y(d.v); });
   const area=path+' L '+x(data.length-1)+' '+(pad.t+ih)+' L '+pad.l+' '+(pad.t+ih)+' Z';
   return '<svg viewBox="0 0 '+w+' '+h+'" style="width:100%"><path d="'+area+'" fill="rgba(61,126,255,.08)"/><path d="'+path+'" fill="none" stroke="#3D7EFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>'+grid+labels+'</svg>';
 }
-function radarSvg(labels, vals, size){
-  size=size||250; const cx=size/2, cy=size/2+4, R=size/2-42, n=labels.length;
-  const pt=(i,r)=>{ const a=-Math.PI/2+2*Math.PI*i/n; return [cx+r*Math.cos(a), cy+r*Math.sin(a)]; };
-  let webs='',axes='',vlbl='',poly='';
-  for(let ring=1;ring<=4;ring++){
-    let pts=''; for(let i=0;i<n;i++){ const p=pt(i,R*ring/4); pts+=p[0]+','+p[1]+' '; }
-    webs+='<polygon points="'+pts+'" fill="none" stroke="#E4EAF2"/>';
+function radarSvg(labels, vals, size=250, confirmed=[]){
+  const n=labels.length, cx=size/2, cy=size/2+4, R=size/2-42;
+  const pt=(i,r)=>{
+    const a=-Math.PI/2+2*Math.PI*i/n;
+    return [cx+r*Math.cos(a), cy+r*Math.sin(a)];
+  };
+  const points=(values)=>values.map((v,i)=>pt(i,R*v/100).join(',')).join(' ');
+  const rings=[25,50,75,100].map(level=>n<3
+    ? `<circle cx="${cx}" cy="${cy}" r="${R*level/100}" fill="none" stroke="#E4EAF2"/>`
+    : `<polygon points="${points(labels.map(()=>level))}" fill="none" stroke="#E4EAF2"/>`).join('');
+  const axes=labels.map((label,i)=>{
+    const [x,y]=pt(i,R), [lx,ly]=pt(i,R+16);
+    return `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="#E4EAF2"/>
+      <text x="${lx}" y="${ly}" text-anchor="middle" font-size="10.5" fill="#5A6472" font-weight="600">${label}</text>`;
+  }).join('');
+  function series(values,color,fill){
+    const dots=values.map((v,i)=>{
+      if(v==null) return '';
+      const [x,y]=pt(i,R*v/100);
+      return `<circle cx="${x}" cy="${y}" r="3.5" fill="${color}"/>`;
+    }).join('');
+    if(values.length!==n || !values.every(v=>v!=null) || n===1) return dots;
+    const shape=n===2?'polyline':'polygon';
+    return `<${shape} points="${points(values)}" fill="${n===2?'none':fill}" stroke="${color}" stroke-width="2"/>`+dots;
   }
-  labels.forEach((lb,i)=>{
-    const p=pt(i,R), pl=pt(i,R+16);
-    axes+='<line x1="'+cx+'" y1="'+cy+'" x2="'+p[0]+'" y2="'+p[1]+'" stroke="#E4EAF2"/>';
-    vlbl+='<text x="'+pl[0]+'" y="'+pl[1]+'" text-anchor="middle" font-size="10.5" fill="#5A6472" font-weight="600">'+lb+'</text>';
-  });
-  vals.forEach((v,i)=>{ const p=pt(i,R*v/100); poly+=(i?' ':'M')+p[0]+' '+p[1]; });
-  const dots=vals.map((v,i)=>{ const p=pt(i,R*v/100); return '<circle cx="'+p[0]+'" cy="'+p[1]+'" r="3.5" fill="#3D7EFF"/>'; }).join('');
-  return '<svg viewBox="0 0 '+size+' '+size+'" style="width:100%">'+webs+axes+vlbl+
-    '<polygon points="'+poly.trim()+'" fill="rgba(61,126,255,.18)" stroke="#3D7EFF" stroke-width="2"/>'+dots+'</svg>';
+  return `<svg viewBox="0 0 ${size} ${size}" style="width:100%">${rings}${axes}
+    ${series(vals,'#3D7EFF','rgba(61,126,255,.14)')}${series(confirmed,'#148468','rgba(20,132,104,.14)')}</svg>`;
 }
 
 /* ================= 登录 / 建档 ================= */
 let agreeOn=false, cd=0, cdTimer=null;
+let onboarding=null;
 function pageLogin(){
   return `
   <div class="login-hero">
@@ -200,14 +236,17 @@ function doLogin(){
   if(!agreeOn){ toast('请先阅读并勾选用户协议'); return; }
   if(code!=='1234'){ toast('验证码错误（演示验证码：1234）'); return; }
   clearInterval(cdTimer);
-  U.logged=true; U.phone=ph;
-  toast('登录成功');
-  if(!U.onboarded){ pushPage(pageOnboard); } else { demoStart(); }
+  if(U.onboarded && U.phone===ph && U.scoreProfile?.phone===ph){
+    U.logged=true;
+    goTab('home');
+    return;
+  }
+  openOnboard(ph);
 }
 /* 3 秒快捷登录：一键体验，自动填充演示档案并直接进入首页 */
 function quickLogin(){
   clearInterval(cdTimer);
-  U.logged=true; U.phone=U.phone||'19900000000';
+  U.logged=true; U.phone=U.phone||'13201609692';
   if(!U.onboarded){
     Object.assign(U,{
       name:U.name||'张真', grade:U.grade||'初三', school:U.school||'临川一中',
@@ -218,18 +257,67 @@ function quickLogin(){
   toast('快捷登录成功');
   goTab('home');
 }
+async function openOnboard(phone){
+  const stage=$id('authStage');
+  const card=$id('authCard').querySelector('.card');
+  beginOnboard(phone);
+  const profile=onboarding;
+  card.inert=true;
+  if(!matchMedia('(prefers-reduced-motion: reduce)').matches){
+    await card.animate([{opacity:1},{opacity:0}],{duration:65,fill:'forwards'}).finished;
+  }
+  if(onboarding!==profile || !card.isConnected) return;
+
+  const layout=stage.querySelector('.auth-layout');
+  const panel=stage.querySelector('.auth-panel');
+  const brand=stage.querySelector('.auth-brand');
+  const title=$id('authTitle');
+  const narrow=matchMedia('(max-width: 760px)').matches;
+  const theme=stage.dataset.theme;
+  const surface=theme==='student' || (theme==='campus' && narrow) ? panel : layout;
+  const previous=surface.getBoundingClientRect();
+  const previousTop=previous.top+scrollY;
+  layout.style.removeProperty('--auth-layout-offset');
+  brand.style.setProperty('--auth-brand-height',`${brand.getBoundingClientRect().height}px`);
+
+  $id('toast').classList.remove('show');
+  stage.dataset.step='profile';
+  title.textContent='完善学习信息';
+  card.outerHTML=pageOnboard();
+  fillOnboardInputs();
+  const expanded=surface.getBoundingClientRect();
+  const growth=Math.max(0,expanded.height-previous.height);
+  const start=Math.max(0,previousTop-growth/2-(expanded.top+scrollY));
+  layout.style.setProperty('--auth-layout-offset',`${start}px`);
+
+  if(!matchMedia('(prefers-reduced-motion: reduce)').matches){
+    const current=surface.getBoundingClientRect();
+    const top=Math.max(0,previousTop-current.top-scrollY);
+    const bottom=Math.max(0,growth-top);
+    surface.animate([
+      {clipPath: `inset(${top}px 0 ${bottom}px round 24px)`},
+      {clipPath:'inset(0px round 24px)'}
+    ],{duration:210,easing:'ease-out'});
+  }
+
+  const activeTitle=theme==='desk' ? $id('onboard-title') : title;
+  activeTitle.focus({preventScroll:true});
+  if(narrow){
+    activeTitle.scrollIntoView({block:'start',behavior:'instant'});
+  }
+}
 function pageOnboard(){
-  return `<div class="hd"><b>完善信息</b><span class="spacer"></span><span style="font-size:12px;color:var(--ink3);cursor:pointer" onclick="backToLogin()">返回登录</span></div>`+`
-  <p class="sub" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px">输入学生相关信息，便于老师快速了解学生，为您制定专属学习计划</p>
-  <div class="card">
-    <div class="field"><label>学生姓名<em>*</em></label><input class="input" id="ob-name" value="${U.name}" placeholder="请输入学生姓名"></div>
-    <div class="field"><label>身份<em>*</em>（升学类型）</label>
-      <div class="segs" id="ob-id">${['中考','高考'].map(g=>`<span class="seg ${U.identity===g?'on':''}" onclick="pickIdentity(this,'${g}')">${g}</span>`).join('')}</div>
+  return `<form class="card auth-profile" id="onboard-form" novalidate onsubmit="event.preventDefault();nextOnboardForm()">
+    <h2 id="onboard-title" tabindex="-1">完善学习信息</h2>
+    <div class="onboard-heading"><span>手机号已验证</span><button type="button" onclick="backToLogin()">返回登录</button></div>
+    <div class="field"><label for="ob-name">学生姓名<em>*</em></label><input class="input" id="ob-name" placeholder="请输入学生姓名"></div>
+    <div class="field"><label id="ob-id-label">身份<em>*</em>（升学类型）</label>
+      <div class="segs" id="ob-id" role="group" aria-labelledby="ob-id-label">${['中考','高考'].map(g=>`<button type="button" class="seg ${onboarding.identity===g?'on':''}" aria-pressed="${onboarding.identity===g}" onclick="pickIdentity(this,'${g}')">${g}</button>`).join('')}</div>
     </div>
     <div id="ob-dep">${obDep()}</div>
-    <div class="field"><label>家长联系电话</label><input class="input" id="ob-pp" type="tel" maxlength="11" value="${U.parentPhone}" placeholder="请输入家长联系电话"></div>
-    <button class="btn" onclick="saveOnboard()">完善资料</button>
-  </div>`;
+    <div class="field"><label for="ob-pp">家长联系电话</label><input class="input" id="ob-pp" type="tel" maxlength="11" placeholder="请输入家长联系电话"></div>
+    <button class="btn" type="submit">下一步</button>
+  </form>`;
 }
 /* 中考/高考对应的年级与考试科目 */
 const GRADES={'中考':['初一','初二','初三'],'高考':['高一','高二','高三']};
@@ -239,31 +327,47 @@ const SUBJECTS={
 };
 /* 身份切换时：只重绘依赖区块（年级/科目/总分），姓名等输入不受影响 */
 function obDep(){
-  const grades=GRADES[U.identity]||GRADES['中考'];
-  const subs=SUBJECTS[U.identity]||SUBJECTS['中考'];
-  return `<div class="field"><label>年级<em>*</em></label>
-      <div class="segs" id="ob-grade">${grades.map(g=>`<span class="seg ${U.grade===g?'on':''}" onclick="pickSeg(this,'grade','${g}')">${g}</span>`).join('')}</div>
+  const {identity,grade,subjects}=onboarding;
+  return `<div class="field"><label id="ob-grade-label">年级<em>*</em></label>
+      <div class="segs" id="ob-grade" role="group" aria-labelledby="ob-grade-label">${GRADES[identity].map(g=>`<button type="button" class="seg ${grade===g?'on':''}" aria-pressed="${grade===g}" onclick="pickOnboardOption(this,'grade','${g}')">${g}</button>`).join('')}</div>
     </div>
-    <div class="field"><label>考试科目<em>*</em>（可多选）</label>
-      <div class="segs subgrid" id="ob-subs">${subs.map(s=>`<span class="seg ${U.subjects.includes(s)?'on':''}" onclick="toggleSub(this,'${s}')">${s}</span>`).join('')}</div>
+    <div class="field"><label id="ob-subs-label">考试科目<em>*</em>（可多选）</label>
+      <div class="segs subgrid" id="ob-subs" role="group" aria-labelledby="ob-subs-label">${SUBJECTS[identity].map(s=>`<button type="button" class="seg ${subjects.includes(s)?'on':''}" aria-pressed="${subjects.includes(s)}" onclick="toggleSub(this,'${s}')">${s}</button>`).join('')}</div>
     </div>
-    <div class="field"><label>目前总分数<em>*</em></label><input class="input" id="ob-total" type="number" value="${U.total||''}" placeholder="${U.identity==='高考'?'如：586（满分 750）':'如：612（满分 740）'}"></div>`;
+    <div class="field"><label for="ob-total">目前总分数<em>*</em></label><input class="input" id="ob-total" type="number" placeholder="${identity==='高考'?'如：586（满分 750）':'如：612（满分 740）'}"></div>`;
 }
 function pickIdentity(el,v){
-  const totalEl=document.getElementById('ob-total');
-  if(totalEl) U.total=totalEl.value;      /* 切身份前先保存已填总分 */
-  pickSeg(el,'identity',v);
-  if(U.grade && !(GRADES[v]||[]).includes(U.grade)) U.grade='';
-  U.subjects=U.subjects.filter(s=>(SUBJECTS[v]||[]).includes(s));
-  const box=document.getElementById('ob-dep');
-  if(box) box.innerHTML=obDep();
+  if(onboarding.identity===v) return;
+  const total=$id('ob-total').value;
+  pickOnboardOption(el,'identity',v);
+  if(!GRADES[v].includes(onboarding.grade)) onboarding.grade='';
+  onboarding.subjects=onboarding.subjects.filter(s=>SUBJECTS[v].includes(s));
+  $id('ob-dep').innerHTML=obDep();
+  $id('ob-total').value=total;
 }
 function toggleSub(el,s){
-  const i=U.subjects.indexOf(s);
-  if(i>=0){ U.subjects.splice(i,1); el.classList.remove('on'); }
-  else{ U.subjects.push(s); el.classList.add('on'); }
+  const subjects=onboarding.subjects;
+  const i=subjects.indexOf(s);
+  if(i>=0) subjects.splice(i,1);
+  else subjects.push(s);
+  el.classList.toggle('on',i<0);
+  el.setAttribute('aria-pressed',String(i<0));
 }
-function backToLogin(){ U.logged=false; stack=[]; navDir='fwd'; demoStart(); }
+function pickOnboardOption(el,key,value){
+  onboarding[key]=value;
+  for(const option of el.parentNode.children){
+    const active=option===el;
+    option.classList.toggle('on',active);
+    option.setAttribute('aria-pressed',String(active));
+  }
+}
+function backToLogin(){
+  const phone=onboarding.phone;
+  demoStart();
+  const input=$id('lg-phone');
+  input.value=phone;
+  input.focus();
+}
 /* 选项就地切换：只改当前选项组的高亮与数据，不重绘页面（不闪烁、不丢滚动位置） */
 function pickSeg(el,k,v){
   const box=el.parentNode;
@@ -271,18 +375,151 @@ function pickSeg(el,k,v){
   el.classList.add('on');
   U[k]=v;
 }
+const ONBOARD_SCORE_MAX={
+  '中考':{'语文':120,'数学':120,'英语':120,'物理':100,'化学':80,'道德与法治':100,'历史':100},
+  '高考':{'语文':150,'数学':150,'英语':150,'物理':100,'历史':100,'化学':100,'生物':100,'地理':100,'政治':100}
+};
+function beginOnboard(phone){
+  const saved=U.phone===phone ? U : null;
+  const identity=saved?.identity==='高考'?'高考':'中考';
+  onboarding={
+    phone,identity,grade:saved?.grade||'',
+    subjects:SUBJECTS[identity].filter(subject=>saved?.subjects?.includes(subject)),
+    name:saved?.name||'', total:saved?.total||'', parentPhone:saved?.parentPhone||'', scoreReview:null
+  };
+}
+function fillOnboardInputs(){
+  $id('ob-name').value=onboarding.name;
+  $id('ob-pp').value=onboarding.parentPhone;
+  $id('ob-total').value=onboarding.total;
+}
+function nextOnboardForm(){
+  const name=$id('ob-name').value.trim();
+  const total=Number($id('ob-total').value);
+  const {identity,grade,subjects}=onboarding;
+  if(!name){ toast('请填写学生姓名'); $id('ob-name').focus(); return; }
+  if(!GRADES[identity].includes(grade)){ toast('请选择年级'); $id('ob-grade').querySelector('button').focus(); return; }
+  if(!subjects.length){ toast('请选择考试科目'); $id('ob-subs').querySelector('button').focus(); return; }
+  if(!Number.isFinite(total)||total<=0){ toast('请填写目前总分数'); $id('ob-total').focus(); return; }
+  Object.assign(onboarding,{name,total,parentPhone:$id('ob-pp').value.trim()});
+  $id('toast').classList.remove('show');
+  switchOnboardForm(pageOnboardScores(),'确认各科分数');
+  renderOnboardScores();
+}
+function previousOnboardForm(){
+  switchOnboardForm(pageOnboard(),'完善学习信息');
+  fillOnboardInputs();
+}
+function switchOnboardForm(markup,title){
+  $id('onboard-form').outerHTML=markup;
+  const outerTitle=$id('authTitle');
+  if(outerTitle) outerTitle.textContent=title;
+  const modalSheet=$id('onboard-form').closest('#sheet');
+  if(modalSheet) modalSheet.scrollTop=0;
+  const heading=outerTitle && $id('authStage').dataset.theme!=='desk' ? outerTitle : $id('onboard-title');
+  heading.focus({preventScroll:true});
+  if(!modalSheet) heading.scrollIntoView({block:'start',behavior:'instant'});
+}
+function pageOnboardScores(){
+  return `<form class="card auth-profile" id="onboard-form" novalidate onsubmit="event.preventDefault();saveOnboard()">
+    <h2 id="onboard-title" tabindex="-1">确认各科分数</h2>
+    <div class="onboard-heading"><span>已填写总分 ${onboarding.total} 分</span><button type="button" onclick="previousOnboardForm()">上一步</button></div>
+    <section class="onboard-score-review" id="ob-score-review" aria-labelledby="ob-score-title"></section>
+    <button class="btn" type="submit">保存并进入首页</button>
+  </form>`;
+}
+// RAG 接入时替换此函数的数据来源。演示估算按参考满分占比分配总分。
+function getOnboardScoreReference(identity,subjects,total){
+  const maxima=subjects.map(name=>ONBOARD_SCORE_MAX[identity][name]);
+  const sum=maxima.reduce((a,b)=>a+b,0);
+  const exact=maxima.map(maxScore=>total*maxScore/sum);
+  const scores=exact.map(Math.floor);
+  if(total<=sum){
+    const order=exact.map((value,i)=>({i,remainder:value-scores[i]})).sort((a,b)=>b.remainder-a.remainder);
+    const remaining=Math.round(total)-scores.reduce((a,b)=>a+b,0);
+    for(const {i} of order.slice(0,remaining)) scores[i]++;
+  }
+  return subjects.map((name,i)=>({name,maxScore:maxima[i],estimate:total<=sum?scores[i]:null}));
+}
+function scoreBandOptions(maxScore){
+  return Array.from({length:Math.ceil(maxScore/10)},(_,i)=>({
+    min:i*10,max:Math.min(i*10+9+(i*10+10===maxScore?1:0),maxScore)
+  }));
+}
+function scoreBandLabel({min,max}){ return min===max?`${max} 分`:`${min}–${max} 分`; }
+function renderOnboardScores(){
+  const section=$id('ob-score-review');
+  const {phone,identity,grade,subjects,total}=onboarding;
+  const scope=`${identity}|${grade}`;
+  const previous=onboarding.scoreReview;
+  const saved=U.scoreProfile;
+  const source=previous?.scope===scope ? previous.rows
+    : saved?.phone===phone && saved.identity===identity && saved.grade===grade ? (saved.subjects||[]) : [];
+  const rows=getOnboardScoreReference(identity,subjects,total).map(row=>{
+    const bands=scoreBandOptions(row.maxScore);
+    const prior=source.find(item=>item.name===row.name&&item.maxScore===row.maxScore);
+    const band=bands.find(item=>item.min===prior?.min&&item.max===prior?.max);
+    return {...row,bands,min:band?.min??null,max:band?.max??null};
+  });
+  onboarding.scoreReview={scope,rows};
+  section.innerHTML=`
+    <h3 id="ob-score-title">各科成绩雷达图</h3>
+    <p class="onboard-score-note">${rows[0].estimate==null
+      ? '总分超过所选科目的参考满分，请核对科目或直接选择分数段。'
+      : '蓝线是按录入总分等比例分配的演示参考。'}</p>
+    <div class="onboard-score-chart" id="ob-score-chart" role="img" aria-label="各科成绩占参考满分的比例"></div>
+    <div class="onboard-score-legend">${rows[0].estimate==null?'':'<span>演示参考</span>'}<span class="confirmed">已选分数段中点</span></div>
+    <div class="onboard-score-rows">${rows.map((row,i)=>`
+      <div class="onboard-score-row">
+        <div><label for="ob-score-${i}">${row.name}</label><small>${row.estimate==null?'':`参考 ${row.estimate} 分 · `}满分 ${row.maxScore} 分</small></div>
+        <select class="input" id="ob-score-${i}" aria-label="${row.name}分数段" onchange="pickOnboardScoreBand(this,${i})">
+          <option value="">选择分数段</option>
+          ${row.bands.map(band=>`<option value="${band.min}" ${row.min===band.min?'selected':''}>${scoreBandLabel(band)}</option>`).join('')}
+        </select>
+      </div>`).join('')}</div>
+    <p class="onboard-score-error" id="ob-score-error" role="alert" hidden>请为每一科选择分数段。</p>`;
+  drawOnboardScores();
+}
+function drawOnboardScores(){
+  const rows=onboarding.scoreReview.rows;
+  const reference=rows.map(row=>row.estimate==null?null:100*row.estimate/row.maxScore);
+  const confirmed=rows.map(row=>row.min==null?null:50*(row.min+row.max)/row.maxScore);
+  $id('ob-score-chart').innerHTML=radarSvg(rows.map(row=>row.name),reference,270,confirmed);
+}
+function pickOnboardScoreBand(select,index){
+  const row=onboarding.scoreReview.rows[index];
+  const band=select.value===''?null:row.bands.find(item=>String(item.min)===select.value);
+  row.min=band?.min??null;
+  row.max=band?.max??null;
+  if(onboarding.scoreReview.rows.every(item=>item.min!=null)) $id('ob-score-error').hidden=true;
+  drawOnboardScores();
+}
+function completedOnboardScoreProfile(){
+  const {phone,identity,grade,total,scoreReview:{rows}}=onboarding;
+  const missing=rows.findIndex(row=>row.min==null);
+  if(missing!==-1){
+    $id('ob-score-error').hidden=false;
+    $id(`ob-score-${missing}`).focus();
+    return null;
+  }
+  return {phone,identity,grade,total,source:'demo',
+    subjects:rows.map(({name,maxScore,estimate,min,max})=>({name,maxScore,estimate,min,max}))};
+}
+function archiveScoreSummary(){
+  const profile=U.scoreProfile;
+  if(profile?.subjects?.length && profile.phone===U.phone){
+    return profile.subjects.map(row=>`<span class="tag blue">${row.name} ${scoreBandLabel(row)}</span>`).join('');
+  }
+  return Object.entries(U.scores).map(([name,score])=>`<span class="tag blue">${name} ${score}</span>`).join('');
+}
 function saveOnboard(){
-  const name=document.getElementById('ob-name').value.trim();
-  const total=document.getElementById('ob-total').value;
-  if(!name){ toast('请填写学生姓名'); return; }
-  if(!U.identity){ toast('请选择身份（中考/高考）'); return; }
-  if(!U.grade){ toast('请选择年级'); return; }
-  if(!U.subjects.length){ toast('请选择考试科目'); return; }
-  if(!total||+total<=0){ toast('请填写目前总分数'); return; }
-  U.name=name; U.total=+total;
-  U.parentPhone=document.getElementById('ob-pp').value.trim();
-  U.onboarded=true;
-  closeModal(); toast('信息已提交，老师将在 24 小时内致电确认学习计划');
+  const scoreProfile=completedOnboardScoreProfile();
+  if(!scoreProfile) return;
+  const {phone,identity,grade,subjects,name,total,parentPhone}=onboarding;
+  Object.assign(U,{phone,identity,grade,subjects,name,total,parentPhone,scoreProfile,onboarded:true,logged:true});
+  onboarding=null;
+  closeModal();
+  toast('学习信息和各科分数段已保存');
   goTab('home');
 }
 
@@ -551,48 +788,157 @@ function myMenuButton(label, icon, action){
   return `<button type="button" class="my-row" onclick="${action}"><span class="my-menu-icon" aria-hidden="true">${icon}</span><span>${label}</span>${arw()}</button>`;
 }
 
+function myDateKey(date){
+  const month=String(date.getMonth()+1).padStart(2,'0');
+  const day=String(date.getDate()).padStart(2,'0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+function myRecentDays(today,count){
+  return Array.from({length:count},(_,index)=>{
+    const date=new Date(today);
+    date.setDate(today.getDate()-count+1+index);
+    return date;
+  });
+}
+function studyShortDate(date){ return `${date.getMonth()+1}.${date.getDate()}`; }
+function studyWeekDays(date){
+  const sunday=new Date(date);
+  sunday.setHours(0,0,0,0);
+  sunday.setDate(date.getDate()+6-(date.getDay()+6)%7);
+  return myRecentDays(sunday,7);
+}
+const STUDY_HOUR_EXAMPLE=[0.8,1.4,1.7,1.1,2.2,1.3,1.5];
+function addStudyHours(amount,type,detail,date=new Date()){
+  const hours=U.hours;
+  for(const period of ['today','week','total']) hours[period]=+(hours[period]+amount).toFixed(1);
+  const byDay=hours.byDay??={};
+  const day=myDateKey(date);
+  byDay[day]=+((byDay[day]||0)+amount).toFixed(1);
+  const time=[date.getHours(),date.getMinutes()].map(value=>String(value).padStart(2,'0')).join(':');
+  (hours.entries??=[]).push({day,time,type,detail,minutes:Math.round(amount*60)});
+}
+function myText(value){
+  const escapes={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+  return String(value??'').replace(/[&<>"']/g,char=>escapes[char]);
+}
+function myHoursChart(days,values){
+  const max=Math.max(1,...values.filter(Number.isFinite));
+  const points=values.map((value,index)=>Number.isFinite(value)?[24+48*index,64-50*value/max]:null);
+  if(points.every(point=>!point)) return '<p class="my-chart-empty">暂无近 7 天学时记录</p>';
+  const label=days.map((day,index)=>`${day.getMonth()+1}月${day.getDate()}日 ${points[index]?`${values[index]} 小时`:'无记录'}`).join('，');
+  const segments=points.slice(1).map((point,index)=>point&&points[index]?`M${points[index].join(' ')}L${point.join(' ')}`:'').join('');
+  return `<svg class="my-hours-chart" viewBox="0 0 336 70" preserveAspectRatio="none" role="img" aria-label="${label}">
+    <path class="my-chart-grid" d="M0 14H336M0 39H336M0 64H336"/>
+    <path class="my-chart-line" d="${segments}"/>
+    ${points.map(point=>point?`<circle cx="${point[0]}" cy="${point[1]}" r="3"/>`:'').join('')}
+  </svg><div class="my-chart-days" aria-hidden="true">${days.map(day=>`<span>${'日一二三四五六'[day.getDay()]}</span>`).join('')}</div>`;
+}
+function myScoreChart(exam){
+  if(!exam) return '<p class="my-chart-empty">暂无考试成绩</p>';
+  const rows=myScoreRates(exam);
+  const scores=rows.length?rows:[['总分',exam.v]];
+  return `<div class="my-score-chart" aria-label="${rows.length?'各科得分率':'总分得分率'}">${scores.map(([name,value])=>{
+    const percent=Math.round(value);
+    return `<div class="my-score-row"><span>${myText(name)}</span><span class="my-score-track" aria-hidden="true"><i style="width:${value}%"></i></span><span>${percent}%</span></div>`;
+  }).join('')}</div>`;
+}
+function myCheckinChart(today,monthDays,checked){
+  const todayKey=myDateKey(today);
+  const leading=(monthDays[0].getDay()+6)%7;
+  const month=today.getMonth()+1;
+  return `<div class="my-checkin-chart" role="group" aria-label="${today.getFullYear()} 年 ${month} 月打卡日历，已打卡 ${checked.size} 天">
+    ${[...'一二三四五六日'].map(label=>`<span class="my-checkin-weekday" aria-hidden="true">${label}</span>`).join('')}
+    ${'<span aria-hidden="true"></span>'.repeat(leading)}
+    ${monthDays.map(day=>{
+      const key=myDateKey(day);
+      const done=checked.has(key);
+      const future=key>todayKey;
+      const label=`${month}月${day.getDate()}日 · ${done?'已打卡':future?'尚未到达':'未打卡'}`;
+      return `<time datetime="${key}" class="my-checkin-day${done?' done':future?' future':''}"${key===todayKey?' aria-current="date"':''} aria-label="${label}" title="${label}">${day.getDate()}</time>`;
+    }).join('')}
+  </div>`;
+}
+function myStatCard(title,value,unit,period,chart,action){
+  return `<article class="my-stat-card${action?' my-stat-linked':''}">
+    <header><h3>${title}</h3><span class="my-stat-period">${period}</span>${action?arw():''}</header>
+    <p class="my-stat-value">${value}${unit?` <small>${unit}</small>`:''}</p>
+    <div class="my-stat-chart">${chart}</div>
+    ${action?`<button class="my-stat-link" type="button" aria-label="${action[0]}" onclick="pushPage(${action[1]})"></button>`:''}
+  </article>`;
+}
+function myPlanPanel(today){
+  const week=studyWeekDays(today);
+  const [monday,sunday]=[week[0],week[6]];
+  const plan=savedStudySchedule(today);
+  const [currentWeek,task]=STUDY_PLAN_WEEKS.find(([, , status])=>status==='doing');
+  const dateLabel=date=>`${date.getMonth()+1}.${date.getDate()}`;
+  return `<section class="my-panel" aria-labelledby="my-plan-heading">
+    <h2 id="my-plan-heading">本周学习计划 <small>示例</small></h2>
+    <button type="button" class="my-schedule-main my-current-plan" onclick="pushPage(pagePlan)">
+      <span class="my-menu-icon" aria-hidden="true">${IC.plan}</span>
+      <span class="my-schedule-copy"><b>${currentWeek} · 进行中</b><small>${task}</small></span>
+      <span class="my-schedule-action">查看详情</span>${arw()}
+    </button>
+    <div class="my-week-heading">
+      <div><h3>本周学习安排</h3><p>${dateLabel(monday)} – ${dateLabel(sunday)}</p></div>
+      <button type="button" class="btn sm lite" onclick="tapSchedule()">查看安排</button>
+    </div>
+    <ul class="my-week-days" aria-label="周一到周日的学习安排">
+      ${week.map((date,index)=>{
+        const hours=U.activated&&date.getMonth()===today.getMonth()&&date.getFullYear()===today.getFullYear()?Number(plan[date.getDate()]):0;
+        const hasPlan=Number.isFinite(hours)&&hours>0;
+        const isToday=myDateKey(date)===myDateKey(today);
+        return `<li class="${hasPlan?'scheduled':''}"${isToday?' aria-current="date"':''}>
+          <span>周${'一二三四五六日'[index]}</span><time datetime="${myDateKey(date)}">${dateLabel(date)}</time>
+          <small>${hasPlan?`${hours} 小时`:'—'}</small>
+        </li>`;
+      }).join('')}
+    </ul>
+    ${U.activated?'':'<p class="my-week-note">开通课程后可安排学习时间</p>'}
+  </section>`;
+}
+function myWrongPanel(){
+  const wrongs=S.records.filter(record=>!record.ok);
+  return `<section class="my-panel my-wrong-panel" aria-labelledby="my-wrong-heading">
+    <div class="my-panel-heading"><h2 id="my-wrong-heading">错题记录</h2><span>${wrongs.length} 道</span></div>
+    <div class="my-wrong-list">${wrongQuestionRows(wrongs,true)}</div>
+  </section>`;
+}
 function pageMe(){
   const name=U.name||'同学';
-  const active=U.activatedCourses.length>0;
-  const scanIcon='<svg viewBox="0 0 24 24"><path d="M4 9V4h5m6 0h5v5M4 15v5h5m6 0h5v-5M4 12h16"/><path d="M8 8h2v2H8zm6 6h2v2h-2z"/></svg>';
-  const quick=[
-    ['直播课堂',IC.live,'pushPage(pageLive)'],
-    ['学习计划',IC.plan,'pushPage(pagePlan)'],
-    ['打卡记录',IC.check,'pushPage(pageCheckin)']
-  ];
-  const records=[
-    ['学习记录',IC.clock,'pushPage(pageStudyLog)'],
-    ['成绩总览',IC.chart,'pushPage(pageScores)'],
-    ['错题记录',IC.pen,'pushPage(pageWrong)'],
-    ['答题记录',IC.doc,'pushPage(pageCalendar)'],
-    ['答疑记录',IC.chat,'pushPage(pageQaHistory)']
-  ];
+  const today=new Date();
+  const history=myScoreHistory();
+  const exam=history.at(-1);
+  const hourDays=myRecentDays(today,7);
+  const hours=hourDays.map(day=>U.hours.byDay?.[myDateKey(day)]);
+  const sampleHours=!hours.some(Number.isFinite);
+  const monthEnd=new Date(today.getFullYear(),today.getMonth()+1,0);
+  const monthDays=myRecentDays(monthEnd,monthEnd.getDate());
+  const datedCheckins=U.checkins.map(entry=>entry.day).filter(Boolean);
+  const sampleCheckins=!datedCheckins.length;
+  const checked=sampleCheckins
+    ? new Set(myRecentDays(today,14).filter((_,index)=>index!==3&&index!==10).map(myDateKey))
+    : new Set(datedCheckins);
+  const todayKey=myDateKey(today);
+  const shownCheckins=new Set(monthDays.map(myDateKey).filter(key=>key<=todayKey&&checked.has(key)));
   return `<div class="my-hub">
     <header class="my-identity" aria-label="个人资料">
-      <span class="my-identity-avatar" aria-hidden="true">${name[0]}</span>
-      <div class="my-identity-name"><h1>${U.name?name+'同学':'同学'}</h1><p>${U.grade||'初三'} · ${U.identity} <span>学号 00713202</span></p></div>
+      <span class="my-identity-avatar" aria-hidden="true">${myText(name[0])}</span>
+      <div class="my-identity-name"><h1>${myText(U.name?name+'同学':name)}</h1><p>${myText(U.grade||'初三')} · ${myText(U.identity)} <span>学号 00713202</span></p></div>
       <div class="my-identity-actions">
         <button type="button" onclick="pushPage(pageArchive)">学情档案</button>
         <button type="button" onclick="pushPage(pageEditInfo)">修改资料</button>
       </div>
     </header>
-    <div class="my-workspace">
-      <section aria-label="学习数据">
-        <dl class="my-stat-lines">
-          <div><dt>累计学时</dt><dd>${(U.hours.total).toFixed(1)} <small>小时</small></dd></div>
-          <div><dt>做题数</dt><dd>${S.records.length} <small>题</small></dd></div>
-          <div><dt>打卡天数</dt><dd>${U.checkins.length} <small>天</small></dd></div>
-        </dl>
-      </section>
-      <div class="my-feature-list">
-        ${myMenuButton('学习安排',IC.plan,'tapSchedule()')}
-        ${active?myMenuButton('课程章节',IC.play,'pushPage(pageCoursePlay)'):''}
-        ${myMenuButton('扫码',scanIcon,'scanQR()')}
-        ${active?myMenuButton('伴学群',IC.people,'openGroup()'):''}
-        ${quick.map(item=>myMenuButton(...item)).join('')}
-        ${records.map(item=>myMenuButton(...item)).join('')}
+    <section aria-labelledby="my-stats-heading">
+      <h2 id="my-stats-heading">学习数据</h2>
+      <div class="my-stats">
+        ${myStatCard('累计学时',U.hours.total.toFixed(1),'小时','近 7 天',myHoursChart(hourDays,sampleHours?STUDY_HOUR_EXAMPLE:hours),['查看学习记录','pageStudyLog'])}
+        ${myStatCard('成绩概览',exam?.v??'—',exam?'/ 100 分':'','最近一次',myScoreChart(exam),['查看成绩趋势','pageScores'])}
+        ${myStatCard('打卡天数',shownCheckins.size,'天',`${today.getMonth()+1} 月`,myCheckinChart(today,monthDays,shownCheckins))}
       </div>
-    </div>
+    </section>
+    <div class="my-panels">${myPlanPanel(today)}${myWrongPanel()}</div>
     <details class="my-account">
       <summary>账号与设置</summary>
       <div class="my-account-body">
@@ -607,9 +953,9 @@ function pageMe(){
   </div>`;
 }
 function logout(){
-  U.logged=false; U.onboarded=false; stack=[];
+  U.logged=false; stack=[];
   agreeOn=false; clearInterval(cdTimer);    /* 回到登录页时重置协议勾选与倒计时 */
-  demoStart(); toast('已退出登录');
+  demoStart(); persist(); toast('已退出登录');
 }
 
 /* 未开通时说明课表条件，由学生选择是否返回首页。 */
@@ -618,44 +964,11 @@ function tapSchedule(){
     openModal('<h4>专属课程表</h4><p class="sub">开通课程并填写资料后，即可查看课表。</p><button type="button" class="btn" onclick="closeModal();goTab(\'home\')">去选课</button>');
     return;
   }
-  if(U.setupStep===4){ pushPage(pageSetupDone); return; }
-  pushPage(SETUP_PAGES[U.setupStep||1]);
+  if(courseStudy().step===4){ pushPage(pageSetupTime); return; }
+  openCourseSetup();
 }
 
-/* ================= 发现 ================= */
-function pageDiscover(){
-  return `
-  <section class="student-panels discover-catalog" aria-labelledby="discover-title">
-    <div class="discover-heading"><div><h2 id="discover-title">学习资源</h2><p>找到适合当前学习的试卷、教材和资料</p></div></div>
-    <label class="discover-search"><span>搜索资源</span><input id="discover-search" type="search" placeholder="搜索试卷、教材或资料" oninput="filterDiscover()"></label>
-    <div class="discover-filters" aria-label="资源分类">
-      <button type="button" class="on" data-discover-filter="all" aria-pressed="true" onclick="filterDiscover('all')">全部</button>
-      <button type="button" data-discover-filter="paper" aria-pressed="false" onclick="filterDiscover('paper')">试卷</button>
-      <button type="button" data-discover-filter="book" aria-pressed="false" onclick="filterDiscover('book')">教材</button>
-      <button type="button" data-discover-filter="material" aria-pressed="false" onclick="filterDiscover('material')">资料</button>
-      <button type="button" data-discover-filter="tool" aria-pressed="false" onclick="filterDiscover('tool')">工具</button>
-    </div>
-    <div class="discover-resources">
-      <button type="button" class="discover-resource" data-category="paper" onclick="pushPage(pagePapers)"><div class="ci" style="background:var(--blue-bg);color:var(--blue)">${IC.doc}</div><div class="ct"><b>试卷</b><small>模拟测试卷 · 同步测试卷 · 区域测试卷</small></div>${arw()}</button>
-      <button type="button" class="discover-resource" data-category="book" onclick="pushPage(pageTextbook)"><div class="ci" style="background:#F1EFFA;color:#7A5CD6">${IC.book}</div><div class="ct"><b>个性化教材</b><small>30 篇专属讲义 · 按漏洞定制</small></div>${arw()}</button>
-      <button type="button" class="discover-resource" data-category="material" onclick="pushPage(pageMaterials)"><div class="ci" style="background:var(--orange-bg);color:#E8862C">${IC.star}</div><div class="ct"><b>资料领取</b><small>全科资料库 · 真题模拟 · 学霸手册</small></div>${arw()}</button>
-      <button type="button" class="discover-resource" data-category="tool" onclick="pushPage(pageAiTest)"><div class="ci" style="background:var(--green-bg);color:#27A566">${IC.chart}</div><div class="ct"><b>AI 测评</b><small>评估学习情况 · 找到薄弱知识点</small></div>${arw()}</button>
-    </div>
-    <p class="discover-empty" hidden>没有找到相关资源，请调整搜索内容或分类。</p>
-  </section>`;
-}
-function filterDiscover(category){
-  const catalog=document.querySelector('.discover-catalog');
-  if(!catalog) return;
-  if(category){ catalog.querySelectorAll('[data-discover-filter]').forEach(button=>{const active=button.dataset.discoverFilter===category;button.classList.toggle('on',active);button.setAttribute('aria-pressed',String(active));}); }
-  const active=catalog.querySelector('[data-discover-filter].on').dataset.discoverFilter;
-  const query=catalog.querySelector('#discover-search').value.trim().toLowerCase();
-  let visible=0;
-  catalog.querySelectorAll('.discover-resource').forEach(item=>{const show=(active==='all'||item.dataset.category===active)&&item.textContent.toLowerCase().includes(query);item.hidden=!show;if(show) visible++;});
-  catalog.querySelector('.discover-empty').hidden=visible!==0;
-}
-
-/* ================= 课程：列表 / 详情 / 激活 / 三步信息采集 ================= */
+/* ================= 课程：列表 / 详情 / 激活 / 课程准备 ================= */
 /* 调研文档「课程激活」：点击课程 → 三种课程 → 按升学情况选择对应课程 → 输入激活码
    技巧课/技巧同步课可自助输入激活码，课课通需由报名老师发放激活码激活 */
 const COURSES=[
@@ -663,8 +976,11 @@ const COURSES=[
  {id:'sync',  n:'技巧同步课', s:'初一初二、高一高二同步课技巧提升', b:'技巧同步课', bs:'专注于初一初二、高一高二', bg:'linear-gradient(120deg,#FFEAD3,#FFD7A6)', c:'#C77817', need:'code'},
  {id:'tong',  n:'课课通', s:'初高中非毕业班考试思维植入', b:'承前启后，高效突破', bs:'同步学校框架，升维考点思维', bg:'linear-gradient(120deg,#EAE1FF,#D6C7FF)', c:'#6A5CFF', need:'teacher'},
 ];
-const SETUP_PAGES={1:null,2:null,3:null};
-function replacePage(fn, dir){ if(stack.length) stack.pop(); pushPage(fn, dir||'fwd'); }
+function replacePage(fn, dir){
+  const replacing=stack.length>0;
+  if(replacing) stack.pop();
+  pushPage(fn,dir,replacing);
+}
 
 /* ---------- 科目课程库：每个课程、每个升学方向下都有独立课程列表 ---------- */
 const SUB_BASE={
@@ -745,9 +1061,9 @@ function pageCourseDetail(id){
   </section>
   <div class="card" style="margin-top:12px">
     <h4>激活说明</h4>
-    <p class="sub" style="line-height:1.75;margin-top:6px">${c.need==='teacher'?'课课通需由报名老师后台开通，请向老师索取激活码后在此输入。':'本类课程支持输入激活码自助开通（演示激活码：JQ2026）。'}<br>激活后自动生成伴学群二维码，完成 3 步信息采集后由 AI 生成专属课程表。</p>
+    <p class="sub" style="line-height:1.75;margin-top:6px">${c.need==='teacher'?'课课通需由报名老师后台开通，请向老师索取激活码后在此输入。':'本类课程支持输入激活码自助开通（演示激活码：JQ2026）。'}<br>激活后可确认教材与学校进度，再选择进行摸底或直接看课。</p>
   </div>
-  ${U.activated&&U.setupStep>0&&U.setupStep<4?`<div class="card" style="background:var(--blue-bg);border-color:#CFE0FF"><h4>信息采集进行中 · 第 ${U.setupStep}/3 步</h4><button class="btn" style="margin-top:10px" onclick="pushPage(SETUP_PAGES[U.setupStep])">继续填写</button></div>`:''}
+  ${U.activeCourse===id&&courseStudy().step<4?`<div class="card"><h4>课程准备进行中</h4><button class="btn" onclick="openCourseSetup()">继续填写</button></div>`:''}
   <div style="height:6px"></div>`;
 }
 function detailIdentity(el,v,id){
@@ -777,7 +1093,7 @@ function updateSubList(id){
 
 /* ---------- 科目课程 → 激活码 ---------- */
 function tapSubject(id,key){
-  if(U.activatedSubjects.includes(key)){ pushPage(pageCoursePlay); return; }
+  if(U.activatedSubjects.includes(key)){ selectStudyCourse(id,key); pushPage(pageCoursePlay); return; }
   pushPage(()=>pageCourseActivate(id,key));
 }
 function pageCourseActivate(id,key){
@@ -826,11 +1142,11 @@ function doJoin(id,key){
   if(v!=='JQ2026'){ const error=document.getElementById('act-code-error'); if(error){error.textContent=v?'激活码错误，请核对后重试。':'请输入激活码。';error.hidden=false;} if(el) el.setAttribute('aria-invalid','true'); return; }
   if(!U.activatedCourses.includes(id)) U.activatedCourses.push(id);
   if(!U.activatedSubjects.includes(key)) U.activatedSubjects.push(key);
-  U.activated=true; U.activeCourse=id; U.activeSubject=key;
-  if(!U.setupStep) U.setupStep=1;
+  U.activated=true;
+  selectStudyCourse(id,key);
   toast('激活成功！伴学群二维码已生成');
   goTab('courses');
-  pushPage(SETUP_PAGES[U.setupStep]);
+  openCourseSetup();
 }
 
 /* ---------- 伴学群：四身份确认 + 二维码 ---------- */
@@ -852,303 +1168,771 @@ function grpRole(el,r){
 }
 function grpConfirm(){ closeModal(); toast('身份已确认（'+grpRoleVal+'），学习资料已发放'); }
 
-/* ---------- 三步信息采集：通用框架 ---------- */
+/* ---------- 激活后的课程准备 ---------- */
+const COURSE_EXAM_TYPES=['月考','期中考试','期末考试','一模','二模','升学考试'];
+// 演示目录只列出用于验证选择、推荐与播放跳转的课题。
+const COURSE_DEMOS={
+  '中考|数学':{
+    textbooks:{
+      人教版:[
+        ['一元二次方程',['factor','equation']],
+        ['二次函数',['quadratic','translation']],
+        ['圆',['chord','circle']],
+        ['概率初步',['probability']],
+      ],
+      北师大版:[
+        ['一元二次方程',['equation','factor']],
+        ['概率的进一步认识',['probability']],
+        ['二次函数',['quadratic','translation']],
+        ['圆',['chord','circle']],
+      ],
+    },
+    lessons:{
+      factor:{answer:0,t:'因式分解与方程求根',question:Q[2].stem,choices:['(x+3)(x−3)','(x−3)²','(x+9)(x−1)']},
+      equation:{answer:1,t:'一元二次方程的解法',question:'方程 x² = 9 的解是（　）',choices:['x = 3','x = ±3','x = 9'],before:'factor'},
+      quadratic:{answer:0,t:'二次函数图像与系数',question:Q[0].stem,choices:Q[0].opts,before:'factor'},
+      translation:{answer:0,t:'二次函数图像的平移',question:Q[5].stem,choices:Q[5].opts,before:'quadratic'},
+      chord:{answer:1,t:'垂径定理与弦长计算',question:Q[1].stem,choices:Q[1].opts},
+      circle:{answer:0,t:'圆的证明高频模型',question:'同一个圆中，所对圆心角相等的两条弦有什么关系？',choices:['长度相等','互相垂直','一定平行'],before:'chord'},
+      probability:{answer:0,t:'概率统计速解技巧',question:Q[3].stem,choices:['3/5','2/3','1/5']},
+    },
+  },
+  '中考|语文':{
+    textbooks:{部编版:[['语言文字运用',['words','sentence']],['现代文阅读',['mainIdea','evidence']],['古诗文阅读',['classical']]]},
+    lessons:{
+      words:{answer:0,t:'词义与语境辨析',question:'遇到多义词时，判断它在文中的含义应优先看什么？',choices:['上下文','字数','文段长度']},
+      sentence:{answer:0,t:'句子衔接与修改',question:'给一组句子排序时，最适合先找什么？',choices:['时间或逻辑线索','最长的句子','标点最多的句子'],before:'words'},
+      mainIdea:{answer:0,t:'概括段落主要内容',question:'概括段落主要内容时，哪种做法最合适？',choices:['抓住对象和关键事件','罗列全部细节','只摘抄最后一句']},
+      evidence:{answer:0,t:'从文章中寻找答题依据',question:'回答阅读题时，哪种做法更有依据？',choices:['结合原文关键语句','只描述自己的感受','只复述题目'],before:'mainIdea'},
+      classical:{answer:0,t:'结合语境理解文言词语',question:'遇到不熟悉的文言词语，优先参考什么？',choices:['上下文与句意','现代字形','句子长短']},
+    },
+  },
+};
+// 以下目录用于表单演示，版本与课题仅作示例。
+const EXAMPLE_TEXTBOOKS={
+  中考:{
+    英语:['人教版',['校园生活','社团活动与交流','描述日常安排'],['语言运用','一般过去时','阅读并提取信息']],
+    物理:['人教版',['运动和力','惯性','二力平衡'],['电流和电路','电路的组成','串联和并联']],
+    化学:['人教版',['物质的变化','区分物理变化与化学变化','化学变化中的能量'],['化学方程式','质量守恒定律','化学方程式的配平']],
+    道法:['统编版',['个人与社会','认识社会生活','承担社会责任'],['法治教育','法律与生活','依法维护权利']],
+    历史:['统编版',['中国古代史','秦汉大一统','隋唐的社会文化'],['中国近代史','近代化的探索','辛亥革命']],
+    地理:['人教版',['地球和地图','认识经纬网','阅读等高线地形图'],['中国地理','地形与地势','气候与生活']],
+    生物:['人教版',['细胞与生命','观察细胞结构','认识细胞的分裂'],['生物与环境','生态系统的组成','食物链和食物网']],
+  },
+  高考:{
+    语文:['统编版',['现代文阅读','梳理文章论证','概括段落内容'],['古诗文阅读','辨析文言词义','理解古诗意象']],
+    数学:['人教 A 版',['函数','函数的定义域','函数的单调性'],['三角函数','认识弧度制','三角函数的图像']],
+    英语:['人教版',['学习与交流','阅读校园主题文章','用英语介绍学习计划'],['语法与写作','定语从句','写作中的句间衔接']],
+    物理:['人教版',['直线运动','位移和速度','匀变速直线运动'],['相互作用','分析常见受力','力的合成与分解']],
+    化学:['人教版',['物质的分类与转化','物质的分类','离子反应'],['化学计量','物质的量','物质的量浓度']],
+    生物:['人教版',['细胞的结构','细胞膜的功能','细胞器分工'],['遗传学基础','分离定律','基因与性状']],
+    政治:['统编版',['经济与社会','认识市场机制','理解收入分配'],['政治与法治','公民参与','法治社会']],
+    历史:['统编版',['中国古代史','多元一体的早期文明','古代国家治理'],['世界史','新航路开辟','工业革命']],
+    地理:['人教版',['自然地理','大气受热过程','水循环'],['人文地理','人口迁移','城市空间结构']],
+  },
+};
+const EXAMPLE_STUDY_QUESTIONS={
+  '社团活动与交流':[0,'想邀请同学加入篮球社团，哪句表达合适？','Would you like to join the basketball club?','Where did you put my basketball?','How many students are in your class?'],
+  '描述日常安排':[0,'哪句话表示“我每天早上七点起床”？','I get up at seven every morning.','I got up late yesterday.','I go to bed at seven every evening.'],
+  '一般过去时':[1,'She ___ the science museum last Sunday.','visits','visited','will visit'],
+  '阅读并提取信息':[1,'通知写着 “The club meets every Friday at 4 p.m.”。社团什么时候集合？','每周四下午四点','每周五下午四点','每周五上午四点'],
+  '惯性':[0,'公交车突然刹车时，站着的乘客容易向前倾。主要原因是什么？','乘客的惯性','乘客的重力消失','公交车转弯'],
+  '二力平衡':[2,'一本书静止在水平桌面上。书受到的重力与桌面对它的支持力有什么关系？','大小相等，方向相同','大小不等，方向相反','大小相等，方向相反'],
+  '电路的组成':[0,'在电池、小灯泡、开关和导线组成的简单电路中，开关断开时小灯泡会怎样？','熄灭','亮度不变','比原来更亮'],
+  '串联和并联':[1,'两盏小灯泡并联，一条支路断开。电源和另一支路都正常，另一盏灯会怎样？','也会熄灭','仍能发光','无法接通电路'],
+  '区分物理变化与化学变化':[2,'下列哪一项发生了化学变化？','冰块融化','纸张撕碎','铁钉生锈'],
+  '化学变化中的能量':[0,'蜡烛燃烧时，主要以什么形式向周围释放能量？','热和光','声音','电流'],
+  '质量守恒定律':[0,'在密闭容器中发生化学反应，反应前后的总质量有什么关系？','相等','一定减小','一定增大'],
+  '化学方程式的配平':[1,'配平 2H₂ + O₂ → ___H₂O，水前的系数应是多少？','1','2','4'],
+  '认识社会生活':[0,'为社区图书角整理书籍，最能体现哪一种行为？','参与社区公共生活','独自安排课余时间','记录个人消费'],
+  '承担社会责任':[2,'小组作业中，你负责整理材料却发现可能无法按时完成。哪种做法更合适？','等交作业时再说','让组员自行猜测进度','尽早沟通并一起调整分工'],
+  '法律与生活':[1,'同学借走物品后忘记归还，第一步怎样处理更合适？','擅自拿走同学的物品','说明情况并沟通归还时间','在公开群里辱骂对方'],
+  '依法维护权利':[0,'发现自己在网络上的照片被未经同意转发，哪种做法更有助于后续处理？','保留相关记录并向可信渠道求助','转发对方的私人信息','删除所有相关记录'],
+  '秦汉大一统':[0,'秦统一后推行哪项措施，方便了各地书面交流？','统一文字','各地自行制定文字','废除书写工具'],
+  '隋唐的社会文化':[0,'唐朝的长安汇聚了许多来自不同地区的商人与使者。这最能说明什么？','对外交流活跃','各地完全不通商','城市只承担农业生产'],
+  '近代化的探索':[1,'下列哪项是洋务运动中的一类举措？','推广科举考试至各国','兴办近代企业','停止发展近代工业'],
+  '辛亥革命':[2,'辛亥革命的重要历史结果是什么？','建立了秦朝','开始了洋务运动','推翻了清朝统治'],
+  '认识经纬网':[0,'在经纬网中，哪条线的纬度是 0°？','赤道','本初子午线','北回归线'],
+  '阅读等高线地形图':[1,'同一幅等高线地形图上，等高线较密的地方通常表示什么？','坡度较缓','坡度较陡','海拔一定最低'],
+  '地形与地势':[1,'概括我国地势的整体特征，哪项较合适？','东高西低','西高东低','南北完全平坦'],
+  '气候与生活':[2,'规划户外活动时，哪项信息对判断某一天是否下雨最直接？','学校所在的经度','当地多年平均气温','当地当天的天气预报'],
+  '观察细胞结构':[0,'观察植物细胞时，细胞最外侧起支持和保护作用的结构是什么？','细胞壁','细胞核','叶绿体'],
+  '认识细胞的分裂':[1,'一个细胞完成一次分裂，通常会形成几个子细胞？','一个','两个','四个'],
+  '生态系统的组成':[0,'池塘中的阳光、水、藻类和鱼共同组成了什么？','生态系统','同一个种群','一条食物链'],
+  '食物链和食物网':[2,'在「草 → 蝗虫 → 青蛙」这条食物链中，生产者是谁？','蝗虫','青蛙','草'],
+  '梳理文章论证':[0,'作者先提出主张，再列出调查数据。调查数据在论证中主要起什么作用？','为主张提供依据','代替全文的标题','转移文章话题'],
+  '概括段落内容':[1,'概括议论性段落时，哪种做法最合适？','逐字抄录整段','找中心观点并简述支撑要点','只摘录最长的句子'],
+  '辨析文言词义':[2,'判断一个文言词在句中的含义，优先参考什么？','该词的笔画数','文章的篇幅','该词在句中的作用和上下文'],
+  '理解古诗意象':[0,'分析古诗中的「明月」时，怎样判断它在这首诗里的作用？','结合诗句和全诗情感判断','看到明月就判断为思乡','只查明月出现了几次'],
+  '函数的定义域':[1,'函数 f(x) = 1/(x−2) 的定义域需要排除哪个实数？','0','2','−2'],
+  '函数的单调性':[2,'如果 x₁ ＜ x₂ 时总有 f(x₁) ＜ f(x₂)，函数在这个区间上具有怎样的单调性？','单调递减','恒为常数','单调递增'],
+  '认识弧度制':[0,'180° 对应多少弧度？','π','π/2','2π'],
+  '三角函数的图像':[1,'函数 y = sin x 的最小正周期是多少？','π','2π','4π'],
+  '阅读校园主题文章':[2,'短文写道 “The school introduced a reading hour to help students build a daily habit.”。学校开设阅读时段的目的是什么？','减少图书借阅','延长考试时间','帮助学生养成每日阅读习惯'],
+  '用英语介绍学习计划':[0,'哪句话最适合用来说明下周的学习计划？','I plan to review two units next week.','I reviewed two units last week.','I used to review in the library.'],
+  '定语从句':[1,'The student ___ won the prize is in my class.','where','who','why'],
+  '写作中的句间衔接':[2,'I wanted to join the club. ___, the registration had already closed.','For example','As a result','However'],
+  '位移和速度':[0,'一名学生向东走 100 米，再向西走 100 米。相对起点的位移是多少？','0 米','100 米向东','200 米向西'],
+  '匀变速直线运动':[1,'物体从静止开始，沿直线以 2 m/s² 的加速度运动。3 秒后速度大小是多少？','2 m/s','6 m/s','9 m/s'],
+  '分析常见受力':[1,'一本书静止在水平桌面上，忽略空气作用。书受到哪些力？','只有支持力','重力和支持力','重力和滑动摩擦力'],
+  '力的合成与分解':[2,'同一直线上有 3 N 和 5 N 两个方向相反的力。合力的大小是多少？','8 N','15 N','2 N'],
+  '物质的分类':[0,'下列哪项属于混合物？','空气','蒸馏水','氧气'],
+  '离子反应':[1,'将盐酸与氢氧化钠溶液混合，净反应中直接生成水的粒子是哪一对？','Na⁺ 和 Cl⁻','H⁺ 和 OH⁻','Na⁺ 和 H⁺'],
+  '物质的量':[2,'使用 n = m/M 计算物质的量时，M 表示什么？','质量','体积','摩尔质量'],
+  '物质的量浓度':[0,'将 0.5 mol 溶质配成 1 L 溶液，溶质的物质的量浓度是多少？','0.5 mol/L','1 mol/L','2 mol/L'],
+  '细胞膜的功能':[1,'细胞膜对不同物质进出细胞的限制程度不同，体现了什么特性？','所有物质都能自由通过','选择透过性','所有物质都无法通过'],
+  '细胞器分工':[2,'真核细胞中，哪种细胞器是合成蛋白质的场所？','液泡','高尔基体','核糖体'],
+  '分离定律':[0,'基因型为 Aa 的个体，在正常分离时能产生哪两类配子？','A 和 a','AA 和 aa','Aa 和 Aa'],
+  '基因与性状':[1,'同一品种的植物在光照不同的条件下长势不同，这说明什么？','性状完全由基因确定','环境也可能影响性状','基因与性状没有关系'],
+  '认识市场机制':[2,'其他条件相近时，某商品供应增加，价格通常会受到什么方向的压力？','上涨压力','不会受任何影响','下行压力'],
+  '理解收入分配':[0,'下列哪项属于劳动报酬？','员工获得的工资','存款利息','房屋出租的租金'],
+  '公民参与':[1,'社区就公共设施改造征集意见，哪种行为属于有序参与？','破坏施工说明牌','通过公开渠道提交建议','用谣言影响其他居民'],
+  '法治社会':[2,'发生公共纠纷时，哪种做法更符合依法解决问题的原则？','私自扣留他人物品','在网上公开散布未经核实的信息','通过协商或相应的调解渠道解决'],
+  '多元一体的早期文明':[0,'不同地区考古遗址既有各自特点，也有器物与技术交流。这个现象最能说明什么？','早期文明有多样性，也存在相互联系','各地文化完全相同','各地从未发生交流'],
+  '古代国家治理':[1,'秦朝在全国推行郡县制，使地方官员由中央任免。这强化了什么？','地方官职世袭','中央对地方的管理','地方独立制定国策的能力'],
+  '新航路开辟':[2,'从世界联系的角度看，新航路开辟带来的一个重要变化是什么？','全球海上贸易就此终止','各大洲之间的来往全部减少','不同大洲之间的联系进一步扩大'],
+  '工业革命':[0,'工业革命早期，蒸汽动力的应用直接推动了哪项变化？','机器生产和运输的发展','手工生产全面取代机器','人口完全离开城市'],
+  '大气受热过程':[1,'白天，近地面大气直接受热的主要来源是什么？','地球内部热量','地面向外辐射的热量','月球反射的光'],
+  '水循环':[2,'海面水分以水汽形式进入大气，对应水循环的哪个环节？','降水','地表径流','蒸发'],
+  '人口迁移':[0,'一个人从农村搬到城市工作并长期居住，最典型地体现了什么？','人口迁移','短期旅游','气候变化'],
+  '城市空间结构':[1,'商业中心通常设置在交通较方便的地段，最直接的考虑是什么？','减少到访人数','便于顾客接近和商品流通','方便进行规模化农业生产'],
+};
+// 首个选项是答案。课后题与同一课题的摸底题分别维护。
+const COURSE_PRACTICE={
+  '因式分解与方程求根':['分解因式：x² − 16。','(x+4)(x−4)','(x−4)²','(x+8)(x−2)'],
+  '一元二次方程的解法':['方程 x² = 25 的解是？','x = ±5','x = 5','x = ±25'],
+  '二次函数图像与系数':['函数 y = x² − 5x + 6 的图像与 x 轴交于哪两点？','(2, 0) 和 (3, 0)','(−2, 0) 和 (−3, 0)','(1, 0) 和 (6, 0)'],
+  '二次函数图像的平移':['把 y = x² 的图像向右平移 2 个单位，得到什么？','y = (x−2)²','y = (x+2)²','y = x²−2'],
+  '垂径定理与弦长计算':['圆的半径为 10，圆心到弦的距离为 6。这条弦有多长？','16','8','12'],
+  '圆的证明高频模型':['在同一个圆中，两条弦等长，则它们所对的较小圆心角有什么关系？','两角相等','两角互补','两角均为直角'],
+  '概率统计速解技巧':['袋中有 2 个红球和 3 个白球，随机摸出 1 个，摸到白球的概率是多少？','3/5','2/5','1/3'],
+  '词义与语境辨析':['「这件事很棘手」中的「棘手」是什么意思？','难以处理','很容易完成','手被划伤'],
+  '句子衔接与修改':['哪项最适合接在「先把种子放进土里」之后？','再浇适量的水','昨天已经发芽了','所以种子没有重量'],
+  '概括段落主要内容':['短文讲小组用调查和访谈找出图书角使用率低的原因。最佳概括是什么？','小组调查图书角使用情况及原因','图书角里摆着不同的书','图书管理员每天上班'],
+  '从文章中寻找答题依据':['哪一句最能支持「她提前为活动做好了准备」？','她在活动前一天核对了材料清单','她喜欢晴天','教室里有三排桌子'],
+  '结合语境理解文言词语':['「学而时习之」中的「习」在本句中更接近哪个意思？','温习','习惯','风俗'],
+  '社团活动与交流':['想邀请同学加入读书社团，哪句表达合适？','Would you like to join the reading club?','Where is the school library?','I borrowed a book yesterday.'],
+  '描述日常安排':['哪句表示「我每晚八点读书」？','I read at eight every evening.','I read a book yesterday morning.','I get up at eight every day.'],
+  '一般过去时':['We ___ a film yesterday evening.','watched','watch','will watch'],
+  '阅读并提取信息':['通知写道 “The library opens at 9 a.m. on Saturdays.”。图书馆周六几点开门？','上午九点','上午八点','晚上九点'],
+  '惯性':['公交车突然启动时，站着的乘客容易向后仰。为什么？','身体有保持原来静止状态的趋势','重力突然变大','地面失去支持力'],
+  '二力平衡':['一盏灯静止悬挂，重力为 5 N。忽略其他作用，绳对灯的拉力多大？','5 N','0 N','10 N'],
+  '电路的组成':['由电池、导线和小灯泡组成的简单电路里，灯泡发光需要电路处于什么状态？','闭合','断开','灯泡两端接同一电极'],
+  '串联和并联':['两盏灯串联，其中一盏移除，另一盏会怎样？','熄灭','继续正常发光','亮度增加一倍'],
+  '区分物理变化与化学变化':['下列哪项发生了化学变化？','木柴燃烧','玻璃破碎','水分蒸发'],
+  '化学变化中的能量':['将燃料燃烧用于加热水，主要利用了反应释放的什么能量？','热能','声能','机械能'],
+  '质量守恒定律':['密闭容器反应前含容器总质量为 100 g，反应后称量应为多少？','100 g','90 g','110 g'],
+  '化学方程式的配平':['配平 2Mg + O₂ → ___MgO，氧化镁前的系数应是多少？','2','1','3'],
+  '认识社会生活':['为社区运动会协助登记，属于哪类活动？','参与社区公共生活','个人身体锻炼','居家整理物品'],
+  '承担社会责任':['你答应为班级活动准备音响，但设备坏了。哪种做法更适当？','及时告知并一起寻找替代设备','临时失联','等活动开始再说明'],
+  '法律与生活':['发现网购商品型号与订单不符，哪种处理方式合适？','保留订单并和商家沟通','公开商家的个人信息','丢弃商品与订单后再投诉'],
+  '依法维护权利':['与服务提供者有纠纷，需要说明交易情况。哪项材料有帮助？','订单和沟通记录','无关同学的聊天记录','无法核对的猜测'],
+  '秦汉大一统':['秦统一度量衡，最直接便利了什么？','各地使用相同的计量标准','各地分别采取不同标准','取消商贸中的数量记录'],
+  '隋唐的社会文化':['在唐代长安发现来自不同地区的商业和文化活动记录，最能体现什么？','交流与交往活跃','长安与其他地区完全隔绝','长安禁止商业'],
+  '近代化的探索':['近代开设机器制造企业，主要反映了哪方面的尝试？','引入近代工业生产方式','恢复手工生产作为唯一方式','取消技术学习'],
+  '辛亥革命':['辛亥革命以后，哪一政体在中国结束？','君主专制政体','共和政体','地方行政制度'],
+  '认识经纬网':['在经纬网中，哪条线的经度是 0°？','本初子午线','赤道','北回归线'],
+  '阅读等高线地形图':['同一图上等高线越稀疏，通常说明坡越怎样？','越缓','越陡','越容易判断朝向'],
+  '地形与地势':['从我国地势总体特征推断，很多大江大河的流向是什么？','自西向东','自东向西','全都自南向北'],
+  '气候与生活':['比较两地多年平均降水量，最好查哪类资料？','多年气候统计','今天的云量','昨天的温度'],
+  '观察细胞结构':['植物细胞中，哪一结构通常储有细胞液？','液泡','细胞壁','细胞核'],
+  '认识细胞的分裂':['一个细胞连续分裂两轮，每轮所有细胞均分裂。最终产生几个细胞？','四个','两个','三个'],
+  '生态系统的组成':['在校园池塘生态系统中，哪一项属于非生物因素？','光照','水草','鱼'],
+  '食物链和食物网':['在「草 → 兔 → 狐」中，哪种生物直接取食生产者？','兔','狐','草'],
+  '梳理文章论证':['作者先引用反例，再说明自己的主张为什么仍成立。反例在这里有什么作用？','引出对反对意见的回应','代替文章结论','补充地点描写'],
+  '概括段落内容':['一段文字先说读书可以拓宽视野，再举两个例子。概括时先抓住什么？','读书可以拓宽视野这一观点','第二个例子中的人名','段落一共有几句话'],
+  '辨析文言词义':['「温故而知新」中的「故」更接近哪一个意思？','学过的内容','故乡','事故'],
+  '理解古诗意象':['同是「落叶」，为什么在两首诗里的作用可能不同？','它与各自的语境和情感有关','落叶只代表同一种情感','意象的作用只由字数决定'],
+  '函数的定义域':['f(x) = 1/(x+3) 的定义域应排除哪个数？','−3','3','0'],
+  '函数的单调性':['f(x) = −2x + 1 在实数范围内如何变化？','单调递减','单调递增','恒为常数'],
+  '认识弧度制':['90° 对应多少弧度？','π/2','π','2π'],
+  '三角函数的图像':['函数 y = cos x 的最小正周期是多少？','2π','π','4π'],
+  '阅读校园主题文章':['通知写道 “The music room will close early on Thursday for repairs.”。提前关门是为了什么？','维修','举办演出','安排考试'],
+  '用英语介绍学习计划':['哪句表示「我打算周三练习英语口语」？','I plan to practise speaking English on Wednesday.','I practised speaking English last Wednesday.','I have an English book on my desk.'],
+  '定语从句':['The woman ___ teaches us English is from Canada.','who','where','when'],
+  '写作中的句间衔接':['It was raining heavily. ___, the match was postponed.','As a result','For example','By the way'],
+  '位移和速度':['向北走 60 m 再向南走 20 m，相对起点的位移是什么？','40 m 向北','80 m 向北','40 m 向南'],
+  '匀变速直线运动':['初速度为 4 m/s，加速度为 2 m/s²，沿同一直线加速 3 s。末速度是多少？','10 m/s','6 m/s','12 m/s'],
+  '分析常见受力':['一个球从手中静止释放，离手后忽略空气作用。它受什么力？','重力','重力和手的支持力','没有受到力'],
+  '力的合成与分解':['同一直线上的 4 N 和 7 N 两个力方向相同，合力大小是多少？','11 N','3 N','28 N'],
+  '物质的分类':['下列哪项属于纯净物？','蒸馏水','海水','空气'],
+  '离子反应':['将硝酸银溶液和氯化钠溶液混合，哪一对离子形成沉淀？','Ag⁺ 和 Cl⁻','Na⁺ 和 NO₃⁻','Na⁺ 和 Ag⁺'],
+  '物质的量':['已知一种物质的摩尔质量是 20 g/mol，40 g 该物质为多少物质的量？','2 mol','0.5 mol','800 mol'],
+  '物质的量浓度':['用 2 mol 溶质配成 4 L 溶液，物质的量浓度是多少？','0.5 mol/L','2 mol/L','8 mol/L'],
+  '细胞膜的功能':['哪项体现细胞膜的选择透过性？','不同分子通过细胞膜受到的限制不同','所有分子总能任意通过','细胞膜完全隔绝所有物质'],
+  '细胞器分工':['在植物细胞中，哪一细胞器与光合作用最直接相关？','叶绿体','核糖体','液泡'],
+  '分离定律':['基因型为 Bb 的个体在等位基因正常分离时，可以产生哪些配子？','B 和 b','BB 和 bb','只有 Bb'],
+  '基因与性状':['同一基因型的植物在缺水与水分充足条件下株高不同，说明什么？','环境可以影响性状表现','缺水一定改变所有基因','基因不参与决定性状'],
+  '认识市场机制':['其他条件相近时，需求增加通常对价格产生什么方向的压力？','上涨压力','下行压力','始终没有影响'],
+  '理解收入分配':['哪项最接近因提供资产使用权获得的收入？','出租房屋获得的租金','完成工作获得的工资','加班获得的津贴'],
+  '公民参与':['街道公开征集公交站点调整意见，哪种做法合适？','在指定渠道提出建议并说明理由','撕毁公告材料','冒用他人姓名提交意见'],
+  '法治社会':['遇到邻里矛盾后，哪种行为更符合依法解决纠纷的原则？','保留事实记录并寻求协商或调解','私自扣留对方物品','传播未经证实的消息'],
+  '多元一体的早期文明':['在不同地区发现风格不同的遗存，同时也见到相似器物。较合理的理解是什么？','存在地域差异，也可能有文化交流','各地历史完全相同','各地区没有任何交往'],
+  '古代国家治理':['如果地方官由中央任免，这体现了中央怎样的治理方式？','加强对地方行政的控制','完全放弃地方行政','把地方官位改为世袭'],
+  '新航路开辟':['新航路开辟之后，欧洲、美洲等地区间的海上贸易发生了什么趋势？','联系更频繁','完全停止','只保留沿河贸易'],
+  '工业革命':['相较于手工工场，工业革命早期的机器生产使什么发生了变化？','劳动生产方式和生产规模','机器只能用于家庭烹饪','水陆运输停止发展'],
+  '大气受热过程':['白天近地面升温，地面获得的能量主要来自哪里？','太阳辐射','地下岩层传热','月球反射的光'],
+  '水循环':['水汽在高空冷却后形成云滴，主要对应哪个过程？','凝结','蒸发','下渗'],
+  '人口迁移':['某居民到外省就业并长期居住，哪项因素对这次迁移最直接？','就业机会','季节变化','当天降水'],
+  '城市空间结构':['大型货运仓库优先布局在高速公路出口附近，主要是为了什么？','缩短货物运输和转运时间','提升地区海拔','增加住户日常通勤距离'],
+  '专项平面验算（一）':['长 8 cm、宽 5 cm 的长方形，周长是多少？','26 cm','13 cm','40 cm'],
+  '专项平面验算（二）':['底为 10 cm、高为 6 cm 的三角形，面积是多少？','30 cm²','60 cm²','16 cm²'],
+};
+// 默认演示课与同名已激活课节使用同一道课后题。
+// 每课整理做题步骤、知识点和易错提醒。例题可复用本课摸底素材。
+const COURSE_REVIEW={
+  '因式分解与方程求根':['把两项分别写成平方 → 按 (a+b)(a−b) 展开核对','识别平方差 a²−b²，把它写成 (a+b)(a−b)。','只有式子是两平方项的差，才能直接用平方差公式。'],
+  '一元二次方程的解法':['先移项整理成 x² = a → 写出正负平方根并代回','当 x² = a 且 a 大于 0 时，正、负平方根都是解。','开平方后记得同时检查正根和负根。'],
+  '二次函数图像与系数':['令 y = 0 并因式分解 → 解出横坐标，写成交点 (x, 0)','求图像与 x 轴的交点时，令 y = 0，再解方程。','方程的根是交点的横坐标，交点的纵坐标为 0。'],
+  '二次函数图像的平移':['标出平移的方向和距离 → 左右改 x，上下改常数','左右平移看括号内 x 的变化，上下平移看式子末尾的常数。','向右平移时写成 x 减去相应数值。'],
+  '垂径定理与弦长计算':['从圆心向弦作垂线 → 用勾股定理求半弦，再乘 2','过圆心作弦的垂线，得到半条弦和一个直角三角形。','勾股定理求出的是半弦长，求整条弦还要乘 2。'],
+  '圆的证明高频模型':['确认两条弦位于同圆或等圆 → 连接圆心，比较圆心角','在同圆中，可在等弦与相等的较小圆心角之间相互推导。','使用等弦关系前，先确认两条弦在同圆或等圆中。'],
+  '概率统计速解技巧':['数出所有等可能结果 → 数出符合条件的结果并写成分数','各结果等可能时，概率是符合条件的结果数除以总结果数。','分母要数所有可能结果，分子只数题目关注的结果。'],
+  '词义与语境辨析':['读含有目标词的整句 → 将候选词义代回上下文核对','先读词所在的句子，再用上下文判断具体词义。','多义词的常用义未必适合这句话。'],
+  '句子衔接与修改':['圈出代词和关联词 → 按逻辑关系排列，再通读检查','先找时间词、关联词和代词，判断句子之间的关系。','不要只看句子长短，要检查前后是否接得上。'],
+  '概括段落主要内容':['标出段落的主要对象 → 提炼对象做了什么或作者说明了什么','先找段落谈论的对象，再提炼主要事件或观点。','例子和细节可以帮助判断重点，概括时不必逐个抄写。'],
+  '从文章中寻找答题依据':['圈出题干中的关键词 → 回原文找到对应语句并解释依据','先明确题目问什么，再回到原文找能支持答案的语句。','引用原文后要说明它和问题的关系。'],
+  '结合语境理解文言词语':['圈出待释词及其宾语 → 将推测的词义代回原句核对','用前后句和词语在句中的作用推断词义。','遇到古今都使用的字，也要检查古义是否相同。'],
+  '社团活动与交流':['明确要邀请对方做的事 → 用 Would you like to 加动词原形写成问句','用 Would you like to + 动词原形 发出邀请。','邀请加入某个社团时，join 后面可以直接接社团名称。'],
+  '描述日常安排':['圈出频率或时间短语 → 用一般现在时写出日常动作','描述习惯时，用一般现在时搭配 every day 等时间短语。','看到 every morning，先检查句子是否在说经常发生的事。'],
+  '一般过去时':['圈出 yesterday 等过去时间 → 把谓语改为过去式，再读整句','描述已经结束的过去事件，常用动词的过去式。','last Sunday、yesterday 等时间提示通常要求检查过去式。'],
+  '阅读并提取信息':['确定题目要找哪类信息 → 回原文比对星期、数字和上午下午','先圈出题目问的日期、时间或地点，再回原文定位。','a.m. 表示上午，p.m. 表示下午或晚上，要连同日期一起核对。'],
+  '惯性':['分别判断车和乘客原来的状态 → 找出车速变化后身体仍保持的运动趋势','物体具有保持原来运动状态的性质。','分析乘客前倾或后仰时，先判断身体原先的运动状态。'],
+  '二力平衡':['选定物体并画受力图 → 检查两力等大、反向是否共线','同一物体受两个力平衡时，两力等大、反向且在同一直线上。','先确认两个力都作用于所研究的同一个物体。'],
+  '电路的组成':['从电源一端沿导线追踪 → 检查能否经过灯泡回到另一端','简单电路要形成闭合通路，电流才可持续流过灯泡。','先沿导线从电源一端走一圈，检查能否回到电源另一端。'],
+  '串联和并联':['先标出各支路 → 模拟断开其中一路，检查另一条是否闭合','串联只有一条通路，并联有多条支路。','判断一盏灯断开后另一盏灯的状态，要看是否还有独立通路。'],
+  '区分物理变化与化学变化':['列出变化前后的物质 → 判断是否出现新物质','判断变化类型时，先看有没有生成新物质。','形状、状态变化本身不能说明发生了化学变化。'],
+  '化学变化中的能量':['圈出发光、升温等现象 → 选出现象对应的能量形式','燃烧等化学反应可以伴随热、光等能量变化。','根据现象识别能量形式，例如加热水主要利用热能。'],
+  '质量守恒定律':['划定称量范围 → 把容器内外的全部反应产物计入','反应前后比较质量时，要把所有相关物质都计入。','若有气体逸出，只称容器里剩余物质会漏算气体。'],
+  '化学方程式的配平':['逐个元素数原子个数 → 调整系数，最后复核两边','通过调整化学式前的系数，使反应前后各元素的原子数相等。','配平时不能改化学式里的下标。'],
+  '认识社会生活':['判断活动是否涉及社区共同事务 → 再判断个人是否实际参与','参与社区公共活动，可以了解公共规则并与他人协作。','判断是否参与公共生活，可以看活动是否与社区共同事务有关。'],
+  '承担社会责任':['找出自己承担的任务 → 选择能及时沟通和补救的做法','遇到无法按约完成的任务，及时沟通并协助调整。','等到最后一刻才说明困难，会让他人失去协调时间。'],
+  '法律与生活':['先列明已发生的事实 → 选择与争议直接相关的沟通方式','处理生活纠纷时，先理清事实，再选择合适的沟通方式。','将对话聚焦在可核实的事实和具体请求上。'],
+  '依法维护权利':['找出能说明事实的材料 → 选择可信且合适的求助渠道','遇到权益问题时，保留相关记录，并找可信渠道求助。','保留与问题直接相关的记录，避免扩散无关人员的信息。'],
+  '秦汉大一统':['圈出题目关注的是书写还是计量 → 将目标对应到统一措施','统一文字、度量衡等措施有助于不同地区交流和治理。','统一文字主要影响书写交流，统一度量衡主要影响计量。'],
+  '隋唐的社会文化':['圈出材料里往来的人员和活动 → 归纳材料能说明的交流现象','可从商人、使者和文化传播等材料看隋唐交流。','从材料推结论时，把结论限定在材料能直接支持的范围内。'],
+  '近代化的探索':['先确定题目的历史时期 → 将人物或举措与该时期对照','兴办近代企业是近代化探索的一类实践。','先核对事件的时代背景，再判断某项举措属于哪一阶段。'],
+  '辛亥革命':['辨认事件的时代和对象 → 写出与该事件直接相关的结果','理解辛亥革命时，可从清朝统治结束和共和制度建立来梳理。','历史结果要对应本事件，避免把前一时期的洋务运动混进来。'],
+  '认识经纬网':['先辨经线和纬线 → 找到 0° 的参照线，再读方向','赤道是 0° 纬线，本初子午线是 0° 经线。','读数时先分清经度和纬度，再看东、西或南、北。'],
+  '阅读等高线地形图':['在同一地图上比较线间距 → 用疏密判断坡缓或坡陡','同一图上，等高线越密，坡通常越陡。','判断坡度要看线间距，单看海拔高低不够。'],
+  '地形与地势':['先概括海拔的东西差异 → 再沿地势下降方向判断河流大势','我国地势总体西高东低，可用于推断许多主要河流的总体方向。','总体方向可以辅助判断个别河流，具体流向还要看地形图。'],
+  '气候与生活':['区分题目问某一天还是多年情况 → 选择天气预报或气候统计','天气关注短时间变化，气候概括多年平均特征。','判断某天是否下雨，应看当天的天气信息。'],
+  '观察细胞结构':['看题目问位置还是作用 → 将线索与细胞结构逐项对照','植物细胞的细胞壁位于外侧，起支持和保护作用。','细胞壁和细胞膜是不同结构，答题时看题目问哪种功能。'],
+  '认识细胞的分裂':['写下初始细胞数和分裂轮数 → 题设每轮都分裂时逐轮翻倍','在题设每轮所有细胞都分裂的情况下，细胞数每轮翻倍。','多轮分裂要逐轮翻倍，不能每轮固定只加一个。'],
+  '生态系统的组成':['按生物因素与非生物因素分类 → 确认题目是否问两者组成的整体','生态系统由生物及其所处的非生物环境共同组成。','水、阳光等非生物因素也属于生态系统。'],
+  '食物链和食物网':['先认生产者，再顺着箭头 → 判断谁直接取食谁','先找生产者，再沿箭头看哪些生物取食它。','箭头指向取食者，表示物质和能量传递的方向。'],
+  '梳理文章论证':['标出观点、论据和转折句 → 根据每句与观点的关系判断作用','区分作者的观点、支撑观点的材料和对质疑的回应。','举出事实的句子通常承担论据作用，不能仅凭句子位置判断。'],
+  '概括段落内容':['先划出中心句 → 将不同论据归并成一两条要点','先指出中心观点，再用短句整理支撑它的要点。','段落里例子最具体，不一定是概括的主体。'],
+  '辨析文言词义':['看待释词在句中作什么成分 → 用上下文排除不合句意的词义','结合上下文、词在句中的位置和语法作用解释词义。','不能默认套用现代最常见的词义。'],
+  '理解古诗意象':['找到意象出现的诗句 → 结合前后情感判断它在诗中的作用','结合意象所在的诗句及全诗情感判断它的作用。','同一个意象在不同作品中可能表达不同情感。'],
+  '函数的定义域':['写出分母不等于 0 等限制 → 解出允许的 x 值范围','先找限制条件。分式中，令分母不等于 0。','排除的是使分母为 0 的 x 值。'],
+  '函数的单调性':['在同一指定区间取 x₁ ＜ x₂ → 比较两个函数值的大小','在指定区间里，x 增大时比较 f(x) 是增大还是减小。','描述单调性时要带上所讨论的区间。'],
+  '认识弧度制':['写出 180° = π 弧度 → 将角度乘 π/180 并化简','180° 对应 π 弧度，角度转弧度可乘 π/180。','角度值和弧度值单位不同，90° 写成弧度是 π/2。'],
+  '三角函数的图像':['先确定一个完整的重复区间 → 计算图像重复一次的横向长度','sin x 和 cos x 的最小正周期均为 2π。','周期要看整段图像重复所需的长度，两个零点间距未必是周期。'],
+  '阅读校园主题文章':['圈出问题中的目的或安排 → 回原文定位对应表达','先确定问题问目的还是安排，再从原文找对应语句。','问目的时，留意 to help、in order to 和 for 后面的内容。'],
+  '用英语介绍学习计划':['圈出计划和时间 → 用 I plan to 写出动词原形 → 句末补上时间','用 I plan to + 动词原形，表达自己打算做什么。','plan to 后接动词原形，例如 I plan to review，不能写成 I plan to reviewing。','I plan to review my notes this weekend. 我打算这周末复习笔记。'],
+  '定语从句':['圈出先行词 → 判断关系词在从句中作什么成分','先找从句修饰的先行词，再判断关系词在从句中作什么成分。','先行词是人且关系词在从句中作主语时，可用 who。'],
+  '写作中的句间衔接':['判断两句是转折、因果还是举例 → 代入连接词读一遍','先判断前后句是转折、因果还是举例，再选连接词。','However 表转折，As a result 表结果。'],
+  '位移和速度':['选一个正方向 → 将各段位移带符号相加','位移看起点指向终点的变化，计算时要保留方向。','往返移动时把路程相加，并不能得到位移。'],
+  '匀变速直线运动':['列出 v₀、a、t → 统一方向后代入 v = v₀ + at','加速度恒定时，用 v = v₀ + at 求末速度。','列式前先统一正方向，再给速度和加速度加正负号。'],
+  '分析常见受力':['圈定研究对象 → 逐项核对重力和仍存在的接触作用','先确定研究对象，再逐项找仍然施加作用的物体。','物体离开手后，手的支持力就消失了。'],
+  '力的合成与分解':['统一方向 → 给同向和反向的力加上符号后求和','同一直线力同向相加、反向相减，合力方向看较大的方向分量。','方向相反时不能直接把力的大小相加。'],
+  '物质的分类':['判断样品包含几种物质 → 只有一种是纯净物，多种是混合物','纯净物只含一种物质，混合物含多种物质。','只看外观均匀无法区分纯净物和混合物。'],
+  '离子反应':['列出溶液中的离子 → 划去两边未变化的离子，再检查电荷','写净离子反应时，保留实际参加反应的离子。','在方程两边都未变化的旁观离子应当约去。'],
+  '物质的量':['已知质量和摩尔质量时写 n = m/M → 统一单位再代数值','已知质量和摩尔质量时，用 n = m/M。','用 g 和 g/mol 计算时，所得单位是 mol。'],
+  '物质的量浓度':['确定溶质的物质的量和溶液体积 → 将体积换成 L，再算 n/V','物质的量浓度是溶质的物质的量除以溶液体积。','体积要用配成的溶液总体积，注意换算为 L。'],
+  '细胞膜的功能':['先看题干描述的是允许、限制还是阻隔 → 对应细胞膜的功能','细胞膜对不同物质进出有不同限制，体现选择透过性。','选择透过并不意味着把所有物质都挡在膜外。'],
+  '细胞器分工':['圈出题目问的生命活动 → 把活动与对应细胞器匹配','把细胞器和主要功能对应起来，如核糖体与蛋白质合成。','不要把蛋白质合成和光合作用对应到同一结构。'],
+  '分离定律':['写出一对等位基因 → 将每个等位基因分到一种配子中','在正常分离时，等位基因分别进入不同配子。','写配子类型时，每种配子只带该位点的一个等位基因。'],
+  '基因与性状':['先看两组基因型是否相同 → 再判断性状变化和哪种环境差异有关','性状表现可以同时受基因和环境影响。','环境改变性状，不能据此推断基因必然发生改变。'],
+  '认识市场机制':['先确认变化的是供给还是需求 → 在其他条件相近时判断价格压力','在其他条件相近时，可用供给或需求的变化判断价格压力。','供给增加与需求增加通常对价格产生不同方向的压力。'],
+  '理解收入分配':['找出获得该笔收入的原因 → 将它归入劳动、资产收益或其他类别','先看收入来自劳动、资产使用还是其他来源。','工资通常对应劳动报酬，租金通常来自提供资产使用权。'],
+  '公民参与':['找出题目中的公共事务 → 判断做法是否通过公开渠道表达意见','参与公共事务时，可通过公开渠道提出意见并说明理由。','表达观点前先核实事实，再选择合适的反馈渠道。'],
+  '法治社会':['先分清事实和猜测 → 选能保留证据、沟通或调解的做法','处理纠纷时，可通过协商、调解等方式推动解决。','保存事实记录比传播未经证实的信息更有助于解决问题。'],
+  '多元一体的早期文明':['比较不同遗存的共同点和差异 → 分别归纳地域特点与交流线索','地域文化各有特点，也可通过遗存看出交流与联系。','器物相似可作为讨论交流的线索，不能据此断定各地完全相同。'],
+  '古代国家治理':['圈出谁任免地方官员 → 判断地方权力是否更集中于中央','比较地方治理制度时，重点看地方官员的任免方式。','官员由中央任免与地方官职世袭体现不同的权力关系。'],
+  '新航路开辟':['圈出题目限定的角度 → 描述海上通道如何改变跨地区联系','从世界联系来看，新航路开辟促进了不同地区的海上往来。','若题目限定世界联系，回答应聚焦跨地区交流怎样变化。'],
+  '工业革命':['确认技术应用在哪个行业 → 用生产或运输的具体变化说明影响','机器和动力的应用改变了生产方式和运输条件。','说明影响时，可分开看生产规模和运输效率。'],
+  '大气受热过程':['画出太阳、地面和近地面大气的能量传递箭头 → 按问题辨别直接来源','太阳辐射加热地面，地面辐射再加热近地面大气。','区分近地面大气的直接热源与整个过程的能量来源。'],
+  '水循环':['判断水所处的位置和状态变化 → 对照蒸发、凝结、降水或径流','用蒸发、凝结、降水和径流描述水在各环节间的转移。','液态水变成水汽是蒸发，水汽形成云滴是凝结。'],
+  '人口迁移':['先确认是否改变常住地 → 再按题干找就业、教育等直接原因','判断人口迁移，先看是否跨地区改变常住地。','短期旅游通常没有改变常住地。'],
+  '城市空间结构':['圈出用地类型 → 从客流、货运和交通可达性分析选址','交通条件会影响客流、物流和功能用地布局。','分析选址时，先明确该设施最需要服务的人或运输的货物。'],
+  '专项平面验算（一）':['找出长与宽 → 计算 2×(长＋宽) 并标长度单位','长方形周长等于长与宽之和的两倍。','周长用长度单位，面积用平方单位。','长 6 cm、宽 4 cm 的长方形，周长为 2×(6+4) = 20 cm。'],
+  '专项平面验算（二）':['找到指定底边及对应的垂直高 → 计算底×高÷2 并标平方单位','三角形面积等于底与对应高的乘积除以 2。','高必须与所选的底垂直。','底为 8 cm、高为 5 cm 的三角形，面积为 8×5÷2 = 20 cm²。'],
+};
+const EXAMPLE_COURSE_DEMOS=Object.fromEntries(Object.entries(EXAMPLE_TEXTBOOKS).flatMap(([direction,subjects])=>
+  Object.entries(subjects).map(([subject,[edition,...chapters]])=>{
+    const lessons={};
+    const directory=chapters.map(([chapter,...topics],chapterIndex)=>[chapter,topics.map((t,topicIndex)=>{
+      const id=`example-${chapterIndex+1}-${topicIndex+1}`;
+      const [answer,question,...choices]=EXAMPLE_STUDY_QUESTIONS[t]||[];
+      lessons[id]=question?{t,question,choices,answer}:{t};
+      return id;
+    })]);
+    return [direction+'|'+subject,{textbooks:{[edition]:directory},lessons}];
+  })
+));
+function courseDemo(){
+  const key=U.activeSubject.split('|').slice(1).join('|');
+  return COURSE_DEMOS[key]||EXAMPLE_COURSE_DEMOS[key];
+}
+function courseStudy(){
+  const key=U.activeSubject;
+  if(!U.courseStudy[key]){
+    const {textbook,nextExam,nextExamTime}=U.setup;
+    U.courseStudy[key]={step:U.setupStep===4?4:1,textbook,nextExam,nextExamTime};
+  }
+  return U.courseStudy[key];
+}
+function selectStudyCourse(id,key){
+  if(U.activeSubject) courseStudy();
+  U.courseStudy[key]??={step:1};
+  U.activeCourse=id;
+  U.activeSubject=key;
+  U.setupStep=courseStudy().step;
+}
+function setStudyStep(step){
+  courseStudy().step=step;
+  U.setupStep=step;
+}
+function selectedStudyChapter(){
+  const {textbook,lesson}=courseStudy();
+  const chapters=courseDemo()?.textbooks[textbook];
+  return Array.isArray(chapters)?chapters.find(([,ids])=>ids.includes(lesson)):undefined;
+}
+function openCourseSetup(){
+  const {step}=courseStudy();
+  if(step===4){ pushPage(pageCoursePlay); return; }
+  pushPage(step===2&&(!courseDemo()||selectedStudyChapter())?pageSetup2:pageSetup1);
+}
 function setupFrame(step, title, body, foot, extraTop){
   return `<div class="setup-topbar">
-    <div class="st-nav"><button class="sb" onclick="setupBack(${step})"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button><b>专属课程表</b></div>
-    <div class="st-ttl"><b>${title}</b><span>(${step}/3)</span></div>
+    <div class="st-nav"><b>课程准备</b></div>
+    <div class="st-ttl"><b>${title}</b><span>（${step}/2）</span></div>
   </div>
   <div class="setup-body">${extraTop||''}<div class="setup-card">${body}</div></div>
   <div class="setup-foot">${foot}</div>`;
 }
 function setupBack(step){
-  if(step===1){ goTab('courses'); return; }
-  U.setupStep=step-1; replacePage(SETUP_PAGES[step-1],'back');
+  if(step===2&&stack[stack.length-2]!==pageCoursePlay){
+    setStudyStep(1); replacePage(pageSetup1,'back'); return;
+  }
+  popPage();
 }
-const SETUP_OPTS={
-  schoolProgress:['同步校内进度','略快于学校进度','一轮复习中','二轮复习中','暂时落后于学校进度'],
-  textbook:['人教版','部编版','北师大版','苏教版','沪教版','外研版'],
-  nextExam:['月考','期中考试','期末考试','一模','二模','升学考试'],
-  plannerTime:['工作日晚上 19:00-21:00','周末上午 09:00-11:00','周末下午 14:00-17:00','暂不预约，等老师联系'],
-};
-const SETUP_LABEL={schoolProgress:'学校进度',textbook:'教材版本',nextExam:'下次考试',plannerTime:'规划师预约时间'};
-function sfBox(key,label,req,ph){
-  const v=U.setup[key];
-  return `<div class="sf"><label>${label}${req?'<em>*</em>':''}</label>
-    <div class="sfbox ${v?'on':''}" id="sf-${key}" onclick="setupPick('${key}')"><span class="txt" id="sft-${key}">${v||ph}</span>${arw()}</div></div>`;
+function studyField(key,label,text,placeholder,action,required,disabled=false){
+  return `<div class="sf"><label for="sf-${key}">${label}${required?'<em>*</em>':''}</label>
+    <button type="button" class="sfbox ${text?'on':''}" id="sf-${key}" aria-haspopup="dialog" ${disabled?'disabled':''} onclick="${action}()"><span class="txt">${text||placeholder}</span>${arw()}</button>
+  </div>`;
 }
 function pageSetup1(){
-  const s=U.setup;
+  const demo=courseDemo(), study=courseStudy();
+  const hasCatalog=!!demo;
+  const textbook=hasCatalog&&Object.hasOwn(demo.textbooks,study.textbook)?study.textbook:'';
+  const exampleTextbook=hasCatalog?Object.keys(demo.textbooks)[0]:'';
+  const firstChapter=textbook?demo.textbooks[textbook][0]:null;
+  const progressPlaceholder=firstChapter?`示例：${firstChapter[0]} · ${demo.lessons[firstChapter[1][0]].t}`:'请先选择教材版本';
+  const chapter=selectedStudyChapter();
+  const progress=chapter?[chapter[0],study.chapterOnly?'':demo.lessons[study.lesson].t].filter(Boolean).join(' · '):'';
   const tip=`<div class="card" style="background:var(--green-bg);border-color:#CDEEDC;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;gap:8px;cursor:pointer" onclick="openGroup()">
     <span style="font-size:16px">✅</span><div style="flex:1"><b style="font-size:12.5px">伴学群二维码已自动生成</b><div style="font-size:11px;color:var(--ink3)">学生 / 家长 / 报名老师 / 学管规划师可选</div></div><span style="font-size:12px;color:var(--blue);font-weight:700">查看 ›</span></div>`;
-  return setupFrame(1,'完善个人信息',`
-    ${sfBox('schoolProgress','学校进度',true,'请选择学校进度')}
-    ${sfBox('textbook','教材版本',true,'请选择教材版本')}
-    ${sfBox('nextExam','下次考试',true,'请选择下次考试')}
-    ${sfBox('nextExamTime','下次考试时间',true,'请选择下次考试时间')}
-    <div class="sf"><label>当前科目分数<em>*</em></label>
-      <div class="sfbox ${s.subjectScore?'on':''}"><input id="sf-score" type="number" placeholder="请输入当前科目分数" value="${s.subjectScore}" oninput="U.setup.subjectScore=this.value;this.parentNode.classList.add('on')"><span class="unit">分</span></div></div>
-    ${sfBox('plannerTime','规划师预约时间',false,'请选择规划师预约时间')}
-    <div class="sf"><label>预约备注</label>
-      <div class="sfbox ${s.remark?'on':''}"><textarea id="sf-remark" placeholder="请输入预约备注" oninput="U.setup.remark=this.value;this.parentNode.classList.add('on')">${s.remark}</textarea></div></div>
-    <div style="height:2px"></div>
-  `,`<button class="btn" onclick="setup1Next()">下一步（1/3）</button>`, tip);
+  return setupFrame(1,'教材与学校进度',`
+    ${studyField('textbook','教材版本',textbook,hasCatalog?'示例：'+exampleTextbook:'暂无可选版本','pickStudyTextbook',hasCatalog,!hasCatalog)}
+    ${studyField('schoolProgress','学校进度',progress,hasCatalog?progressPlaceholder:'暂无章节目录','pickStudyProgress',hasCatalog,!textbook)}
+    ${studyField('nextExam','考试时间',nextExamText(),'选择考试类型和日期（选填）','openNextExam',false)}
+    ${hasCatalog?'':'<p class="study-note">当前科目暂无演示教材目录，可继续进入下一步。</p>'}
+  `, '<button type="button" class="btn" onclick="setup1Next()">下一步（1/2）</button>',tip);
 }
-function setupPick(key){
-  if(key==='nextExamTime'){ setupDate(); return; }
-  const opts=SETUP_OPTS[key]||[];
-  openModal(`<h4>选择${SETUP_LABEL[key]||''}</h4><div class="optlist">
-    ${opts.map(o=>`<button class="${U.setup[key]===o?'on':''}" onclick="setupSet('${key}',this)">${o}</button>`).join('')}
-  </div>`);
+function pickStudyTextbook(){
+  openModal(`<h4>选择教材版本</h4><div class="optlist">${Object.keys(courseDemo().textbooks).map(name=>`<button type="button" class="${courseStudy().textbook===name?'on':''}" onclick="chooseStudyTextbook('${name}')">${name}</button>`).join('')}</div>`);
 }
-function setupSet(key,el){
-  U.setup[key]=el.textContent.trim();
-  const t=document.getElementById('sft-'+key), b=document.getElementById('sf-'+key);
-  if(t) t.textContent=U.setup[key]; if(b) b.classList.add('on');
+function chooseStudyTextbook(textbook){
+  const study=courseStudy();
+  if(study.textbook!==textbook) Object.assign(study,{textbook,lesson:null,chapterOnly:false,result:null,playing:null});
+  closeModal(); refresh(); $id('sf-schoolProgress').focus();
+}
+function pickStudyProgress(){
+  const chapters=courseDemo().textbooks[courseStudy().textbook];
+  openModal('<h4>选择学校进度</h4><p class="study-note">教材目录示例</p><div id="study-directory"></div>');
+  renderStudyDirectory(Math.max(0,chapters.indexOf(selectedStudyChapter())),false);
+}
+function renderStudyDirectory(index,showTopics){
+  const study=courseStudy(), demo=courseDemo(), chapters=demo.textbooks[study.textbook];
+  const [chapter,ids]=chapters[index];
+  $id('study-directory').innerHTML=`<div class="study-directory ${showTopics?'show-topics':''}">
+    <nav class="study-chapters" aria-label="教材章节">${chapters.map(([name],i)=>`<button type="button" aria-pressed="${i===index}" onclick="renderStudyDirectory(${i},true)">${name}</button>`).join('')}</nav>
+    <form class="study-topics" onsubmit="event.preventDefault();saveStudyProgress(this,${index})">
+      <button type="button" class="study-chapter-back" onclick="renderStudyDirectory(${index},false)">‹ 返回章节</button>
+      <h5>${chapter}</h5>
+      ${ids.map((id,i)=>`<label><input type="radio" name="lesson" value="${id}" required ${!study.chapterOnly&&id===study.lesson?'checked':''}><span>第 ${i+1} 课 · ${demo.lessons[id].t}</span></label>`).join('')}
+      <label><input type="radio" name="lesson" value="chapter" required ${study.chapterOnly&&ids.includes(study.lesson)?'checked':''}><span>只确定到本章</span></label>
+      <button type="submit" class="btn">确认进度</button>
+    </form>
+  </div>`;
+  if(showTopics) $id('study-directory').querySelector('input:checked,input').focus();
+}
+function saveStudyProgress(form,index){
+  const study=courseStudy();
+  const value=new FormData(form).get('lesson');
+  const chapterOnly=value==='chapter';
+  const lesson=chapterOnly?courseDemo().textbooks[study.textbook][index][1][0]:value;
+  if(study.lesson!==lesson||!!study.chapterOnly!==chapterOnly) Object.assign(study,{lesson,chapterOnly,result:null,playing:null});
+  closeModal(); refresh(); $id('sf-schoolProgress').focus();
+}
+function nextExamText(){
+  const {nextExam,nextExamTime}=courseStudy();
+  const exam=COURSE_EXAM_TYPES.find(option=>option===nextExam);
+  const date=/^\d{4,}-\d{2}-\d{2}$/.test(nextExamTime)?nextExamTime:'';
+  return [exam,date].filter(Boolean).join(' · ');
+}
+function openNextExam(){
+  openModal(`<h4>考试时间</h4>
+  <form onsubmit="event.preventDefault();saveNextExam()">
+    <div class="sf">
+      <label for="sf-exam-type">考试类型</label>
+      <select id="sf-exam-type" class="input" required>
+        <option value="">请选择考试类型</option>
+        ${COURSE_EXAM_TYPES.map(exam=>`<option>${exam}</option>`).join('')}
+      </select>
+    </div>
+    <div class="sf">
+      <label for="sf-date">考试日期</label>
+      <input class="input" id="sf-date" type="date" required>
+    </div>
+    <button type="submit" class="btn">确定</button>
+  </form>`);
+  const exam=document.getElementById('sf-exam-type');
+  exam.value=courseStudy().nextExam||'';
+  document.getElementById('sf-date').value=courseStudy().nextExamTime||'';
+  exam.focus();
+}
+function saveNextExam(){
+  const setup=courseStudy();
+  setup.nextExam=document.getElementById('sf-exam-type').value;
+  setup.nextExamTime=document.getElementById('sf-date').value;
+  const button=document.getElementById('sf-nextExam');
+  button.querySelector('.txt').textContent=nextExamText();
+  button.classList.add('on');
   closeModal();
-}
-function setupDate(){
-  openModal(`<h4>选择下次考试时间</h4><p class="sub">请选择考试日期</p>
-  <input class="input" id="sf-date" type="date" value="${U.setup.nextExamTime||''}" style="margin:12px 0">
-  <button class="btn" onclick="setupDateSave()">确定</button>`);
-}
-function setupDateSave(){
-  const v=document.getElementById('sf-date').value;
-  if(!v){ toast('请选择考试日期'); return; }
-  U.setup.nextExamTime=v;
-  const t=document.getElementById('sft-nextExamTime'), b=document.getElementById('sf-nextExamTime');
-  if(t) t.textContent=v; if(b) b.classList.add('on');
-  closeModal();
+  button.focus();
+  persist();
 }
 function setup1Next(){
-  const s=U.setup;
-  const r=document.getElementById('sf-remark'); if(r) s.remark=r.value.trim();
-  const sc=document.getElementById('sf-score'); if(sc) s.subjectScore=sc.value;
-  if(!s.schoolProgress){ toast('请选择学校进度'); return; }
-  if(!s.textbook){ toast('请选择教材版本'); return; }
-  if(!s.nextExam){ toast('请选择下次考试'); return; }
-  if(!s.nextExamTime){ toast('请选择下次考试时间'); return; }
-  if(!s.subjectScore||+s.subjectScore<=0){ toast('请输入当前科目分数'); return; }
-  U.setupStep=2; replacePage(pageSetup2); toast('个人信息已保存');
+  if(courseDemo()&&!selectedStudyChapter()){
+    toast(courseStudy().textbook?'请选择学校正在学的课题':'请选择教材版本'); return;
+  }
+  setStudyStep(2); replacePage(pageSetup2);
 }
-
-/* ---------- 第二步：能力自评 ---------- */
-const SELF_EVAL=[
- {t:'字音与字形', tags:['字形','字音','多音字','形近字','易错字']},
- {t:'词语的理解与运用', tags:['词的构成','词义','词语的色彩','熟语','词语的来源','词类的划分']},
- {t:'语言的表达与运用', tags:['仿写句子','压缩语段','语段图表','选用句式','句子排序','拟广告词','材料阅读','巧用修辞','扩写改写续写']},
- {t:'病句的辨析与修改', tags:['基本题型','辨析方法','常见病因','修改原则']},
-];
-function starText(n){ return n>=9?'完全掌握，可适当拔高':n>=7?'比较擅长，只需规划重点知识':n>=4?'基本掌握，需要巩固':'没有掌握，重点规划'; }
+function studySkipButton(){
+  return '<button type="button" class="btn lite" onclick="skipStudyDiagnostic()">跳过，直接看课</button>';
+}
 function pageSetup2(){
-  return setupFrame(2,'自我评价',`
-    <p style="font-size:11.5px;color:var(--ink3);margin:-2px 0 12px">根据系统提供的知识模块进行自我评价，算法将据此定位问题与知识漏洞</p>
-    ${SELF_EVAL.map((e,i)=>`<div class="sev" id="sev-${i}">
-      <h5>${i+1}. ${e.t}</h5>
-      <div class="ktags">${e.tags.map(t=>`<span class="ktag">${t}</span>`).join('')}</div>
-      <div class="stars" id="stars-${i}">${Array.from({length:10},(_,k)=>`<i class="${k<U.setup.stars[i]?'on':''}" onclick="setupStar(${i},${k+1})">★</i>`).join('')}</div>
-      <p id="sevp-${i}">${starText(U.setup.stars[i])}</p>
-    </div>`).join('')}
-  `,`<button class="btn ghost" onclick="setupBack(2)">上一步</button><button class="btn" onclick="setup2Next()">下一步（2/3）</button>`);
+  const demo=courseDemo();
+  const hasQuiz=demo&&!!demo.lessons[studyTopic()].question;
+  return setupFrame(2,'薄弱点摸底',`
+    ${demo?'':'<p class="study-note">当前科目暂无演示摸底内容</p>'}
+    ${demo?`<div class="study-methods">
+      ${hasQuiz?`<button type="button" onclick="pushPage(pageStudyQuiz)"><b>在线答题</b></button>`:''}
+      <button type="button" onclick="pushPage(pageStudyUpload)"><b>上传试卷</b></button>
+    </div>`:''}
+  `,studySkipButton());
 }
-function setupStar(i,n){
-  U.setup.stars[i]=n;
-  const box=document.getElementById('stars-'+i);
-  [...box.children].forEach((c,k)=>c.classList.toggle('on',k<n));
-  document.getElementById('sevp-'+i).textContent=starText(n);
+function studyTopic(){
+  const {lessons}=courseDemo();
+  const id=courseStudy().lesson;
+  return Object.hasOwn(lessons,id)?id:Object.keys(lessons)[0];
 }
-function setup2Next(){ U.setupStep=3; replacePage(pageSetup3); }
-
-/* ---------- 第三步：学情提交 ---------- */
-function pageSetup3(){
-  const s=U.setup;
-  return setupFrame(3,'学情提交',`
-    <div class="stepsec"><span class="no">01</span><b>选择学情测评方式</b><em>*</em></div>
-    <div class="scard ${s.uploadCount?'done':''}" id="sc-upload">
-      <div class="si">${IC.doc}</div>
-      <div class="st"><b>上传试卷</b><small>${s.uploadCount?'已上传 '+s.uploadCount+' 张试卷图片':'完成对应学科标准化测评试题'}</small></div>
-      <button class="smini" onclick="event.stopPropagation();setupUpload()">${s.uploadCount?'继续上传':'上传图片'}</button>
-    </div>
-    <div class="scard ${s.analysisDone?'done':''}" id="sc-analysis" onclick="setupAnalysis()">
-      <div class="si">${IC.chart}</div>
-      <div class="st"><b>学情分析</b><small>${s.analysisDone?'答题完成 · 已生成学情分析':'完成对应学科标准化测评试题'}</small></div>${arw()}
-    </div>
-    <div class="stepsec" style="margin-top:18px"><span class="no">02</span><b>学习时间（必选）</b><em>*</em></div>
-    <div class="scard ${s.studyTime?'done':''}" id="sc-time" onclick="pushPage(pageSetupTime)">
-      <div class="si">7</div>
-      <div class="st"><b>填写学习时间</b><small>${s.studyTime?'未来 30 天已规划 · '+s.studyDays+' · '+s.studyTime:'完成学习时间相关内容填写'}</small></div>${arw()}
-    </div>
-    <div style="height:6px"></div>
-  `,`<button class="btn" onclick="setupSubmit()">提交（3/3）</button>`);
+function studyQuizLessons(){
+  const {lessons}=courseDemo();
+  const topic=studyTopic();
+  return [lessons[topic].before,topic].filter(id=>lessons[id]?.question);
 }
-function setupUpload(){
-  U.setup.uploadCount++; U.setup.evalMethod='upload';
-  const c=document.getElementById('sc-upload'); c.classList.add('done');
-  c.querySelector('.st small').textContent='已上传 '+U.setup.uploadCount+' 张试卷图片';
-  c.querySelector('.smini').textContent='继续上传';
-  toast('已模拟上传试卷图片，AI 正在识别');
+function pageStudyQuiz(){
+  const {lessons}=courseDemo();
+  const questions=studyQuizLessons().map(id=>lessons[id]);
+  return head('在线答题',captureQuestionButton('答题'))+`
+    <form class="card study-task" onsubmit="event.preventDefault();finishStudyDiagnostic('quiz',this)">
+      <p class="study-note">演示题目</p>
+      ${questions.map((q,index)=>`<fieldset><legend>${index+1}. ${q.question}</legend>
+        ${q.choices.map((choice,option)=>`<label><input type="radio" name="answer-${index}" value="${option}" required><span>${choice}</span></label>`).join('')}
+      </fieldset>`).join('')}
+      <div class="study-actions">${studySkipButton()}<button type="submit" class="btn">提交答题</button></div>
+    </form>`;
 }
-function setupAnalysis(){
-  openModal(`<h4>学情分析 · 在线答题</h4><p class="sub">完成对应学科标准化测评试题，系统将定位知识漏洞</p>
-  <div style="background:var(--blue-bg);border-radius:12px;padding:12px;margin:12px 0;font-size:12.5px;color:var(--ink2);line-height:1.9">
-    测评范围：${U.setup.textbook||'当前教材'} · ${U.setup.nextExam||'下次考试'}<br>题量：10 题 · 预计 5 分钟
-  </div>
-  <button class="btn" onclick="setupAnalysisDone()">完成测评</button>`);
+function pageStudyUpload(){
+  return head('上传试卷')+`
+    <form class="card study-task" onsubmit="event.preventDefault();finishStudyDiagnostic('upload')">
+      <h3>选择试卷图片</h3><p class="study-note">试卷图片仅在本机选择，本页提供示例分析。</p>
+      <label class="study-file">试卷图片 <input type="file" accept="image/*" required></label>
+      <div class="study-actions">${studySkipButton()}<button type="submit" class="btn">查看示例分析</button></div>
+    </form>`;
 }
-function setupAnalysisDone(){
-  U.setup.analysisDone=true; U.setup.evalMethod=U.setup.evalMethod||'analysis';
-  closeModal();
-  const c=document.getElementById('sc-analysis');
-  if(c){ c.classList.add('done'); c.querySelector('.st small').textContent='答题完成 · 已生成学情分析'; }
-  toast('学情分析已完成');
+function finishStudyDiagnostic(method,form){
+  const topic=studyTopic();
+  const result={method,lesson:topic,prerequisite:false};
+  if(method==='quiz'){
+    const answers=new FormData(form);
+    const {lessons}=courseDemo();
+    const ids=studyQuizLessons();
+    const incorrect=ids.filter((id,index)=>answers.get('answer-'+index)!==String(lessons[id].answer));
+    result.lesson=incorrect[0]||topic;
+    result.prerequisite=result.lesson!==topic;
+    result.total=ids.length;
+    result.correct=ids.length-incorrect.length;
+  }
+  courseStudy().result=result;
+  stack.pop(); replacePage(pageStudyResult);
 }
-function setupSubmit(){
-  const s=U.setup;
-  if(!s.evalMethod&&!s.analysisDone){ toast('请选择学情测评方式（上传试卷或学情分析）'); return; }
-  if(!s.studyTime){ toast('请填写学习时间'); return; }
-  U.setupStep=4; replacePage(pageSetupDone); toast('提交成功，AI 课程规划已生成');
+function pageStudyResult(){
+  const study=courseStudy(), result=study.result;
+  const lesson=courseDemo().lessons[result.lesson];
+  return head('摸底结果')+`<section class="card study-task study-result">
+    <p class="study-note">${result.method==='quiz'?'在线答题':'试卷'} · ${result.total?`答对 ${result.correct}/${result.total} 题`:'示例分析'}</p>
+    <h2>建议从「${lesson.t}」开始</h2>
+    <p>${result.prerequisite?(result.total?'先补本次答错的前置知识，再回到学校正在学的内容。':'先补这节前置课，再回到学校正在学的内容。'):study.chapterOnly?'目前只选到了章节，可以先看该章第一节。':result.method==='upload'?'此顺序按所选学校进度演示。':'可先从当前学校进度对应的课节开始。'}</p>
+    <button type="button" class="btn" onclick="enterStudyPlayer(true)">开始学习这一课</button>
+  </section>`;
+}
+function skipStudyDiagnostic(){
+  if([pageStudyQuiz,pageStudyUpload].includes(stack[stack.length-1])) stack.pop();
+  enterStudyPlayer(false);
+}
+function enterStudyPlayer(recommended){
+  const study=courseStudy();
+  study.playing=recommended?study.result.lesson:study.playing??study.lesson;
+  setStudyStep(4);
+  if(stack[stack.length-2]===pageCoursePlay){ popPage(); return; }
+  replacePage(pageCoursePlay);
 }
 
 /* ---------- 学习时间：未来 30 天日历打卡 ---------- */
 const TIME_SLOTS=[0,1,2,3];
+let studyScheduleDraft;
+function savedStudySchedule(date){
+  const month=myDateKey(date).slice(0,7);
+  return U.setup.dayPlanMonth&&U.setup.dayPlanMonth!==month?{}:U.setup.dayPlan||{};
+}
 function pageSetupTime(){
-  const now=new Date(), y=now.getFullYear(), m=now.getMonth();
-  const first=new Date(y,m,1).getDay(), days=new Date(y,m+1,0).getDate();
-  const sel=U.setup.dayPlan||{};
-  let cells='';
-  for(let i=0;i<first;i++) cells+='<div></div>';
-  for(let d=1;d<=days;d++){
-    const h=sel[d]||0;
-    cells+=`<div class="tday ${h?'on':''}" onclick="toggleDay(${d})"><b>${d}</b><span>${h?h+'h':'—'}</span></div>`;
-  }
-  const cnt=Object.values(sel).filter(v=>v>0).length, total=Object.values(sel).reduce((a,b)=>a+b,0);
-  return head('学习时间规划 - 日历打卡')+`
-  <div class="card" style="padding:12px">
-    <div class="segs" style="margin-bottom:12px">
-      <span class="seg" onclick="toast('历史打卡记录：暂无')">历史</span>
-      <span class="seg on" onclick="toast('点击日期即可设置当日学习时长')">+ 选择学习时间</span>
-    </div>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-      <b style="font-size:13.5px">${y} 年 ${m+1} 月</b><span style="font-size:11.5px;color:var(--ink3)">未来 30 天可规划</span>
-    </div>
-    <div class="tdgrid">${['日','一','二','三','四','五','六'].map(w=>`<div class="tw">${w}</div>`).join('')}${cells}</div>
-    <div style="display:flex;gap:12px;font-size:11px;color:var(--ink3);margin-top:10px">
-      <span>🟢 已选 <b id="td-cnt">${cnt}</b> 天</span><span>🕒 总时长 <b id="td-total">${total}</b> 小时</span>
-    </div>
-  </div>
-  <div class="card">
-    <h4>学习提醒</h4><p class="sub">规划师可现在致电提醒学习</p>
-    <div class="segs" style="margin-top:12px" id="td-remind">
-      <span class="seg ${U.setup.callRemind!=='否'?'on':''}" onclick="modalSeg(this)">现在致电提醒</span>
-      <span class="seg ${U.setup.callRemind==='否'?'on':''}" onclick="modalSeg(this)">暂不提醒</span>
-    </div>
-  </div>
-  <button class="btn" onclick="saveTimePlan()">保存学习时间</button>`;
+  const today=new Date();
+  const plan={...savedStudySchedule(today)};
+  studyScheduleDraft={today,plan,day:today.getDate(),remind:U.setup.callRemind!=='否'};
+  return head('学习安排详情')+`<div class="study-detail" id="study-schedule-detail">${studyScheduleContent()}</div>`;
 }
-function modalSeg(el){ [...el.parentNode.children].forEach(c=>c.classList.remove('on')); el.classList.add('on'); }
-function toggleDay(d){
-  U.setup.dayPlan=U.setup.dayPlan||{};
-  const cur=U.setup.dayPlan[d]||0;
-  U.setup.dayPlan[d]=cur>=3?0:cur+1;
-  const el=event.currentTarget, h=U.setup.dayPlan[d];
-  el.classList.toggle('on',h>0); el.querySelector('span').textContent=h?h+'h':'—';
-  const vals=Object.values(U.setup.dayPlan);
-  document.getElementById('td-cnt').textContent=vals.filter(v=>v>0).length;
-  document.getElementById('td-total').textContent=vals.reduce((a,b)=>a+b,0);
-}
-function saveTimePlan(){
-  const plan=U.setup.dayPlan||{}, vals=Object.values(plan);
-  const cnt=vals.filter(v=>v>0).length, total=vals.reduce((a,b)=>a+b,0);
-  if(!cnt){ toast('请至少选择 1 天学习时间'); return; }
-  const r=document.querySelector('#td-remind .seg.on');
-  U.setup.callRemind=r&&r.textContent.includes('暂不')?'否':'是';
-  U.setup.studyDays=cnt+' 天'; U.setup.studyTime='共 '+total+' 小时';
-  U.setup.planSaved=true;
-  popPage(); toast('未来 30 天学习时间已保存'+(U.setup.callRemind==='是'?'，将致电提醒':''));
-}
-
-/* ---------- 完成：AI 课程规划 + 专属课程表 ---------- */
-function pageSetupDone(){
-  const s=U.setup, avg=(s.stars.reduce((a,b)=>a+b,0)/s.stars.length).toFixed(1);
-  return `<div class="setup-topbar">
-    <div class="st-nav"><button class="sb" onclick="goTab('home')"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button><b>专属课程表</b></div>
-    <div class="st-ttl"><b>AI 课程规划已生成</b><span>完成</span></div>
-  </div>
-  <div class="setup-body">
-    <div class="card" style="margin-bottom:10px">
-      <h4>① 学情摘要</h4>
-      ${[['学校进度',s.schoolProgress],['教材版本',s.textbook],['下次考试',(s.nextExam||'—')+' · '+(s.nextExamTime||'—')],['当前科目分数',(s.subjectScore||'—')+' 分'],['能力自评均分',avg+' / 10'],['学习时间',(s.studyDays||'—')+' · '+(s.studyTime||'—')]].map(([k,v])=>`<div class="cell" style="padding:9px 2px"><div class="ct"><b style="font-size:12px;color:var(--ink2);font-weight:600">${k}</b></div><span style="font-size:12.5px;font-weight:700">${v||'—'}</span></div>`).join('')}
-    </div>
-    <div class="card" style="margin-bottom:10px">
-      <h4>② AI 课程规划</h4>
-      <p class="sub">按知识漏洞定制 · 每周 3 节技巧课 + 1 次直播</p>
-      <div class="sched" style="margin-top:12px">
-        ${['周一','周二','周三','周四','周五'].map((d,i)=>`<div class="sc ${i<3?'on':''}"><b>${d}</b><span>${i<3?'技巧课':'休息'}</span></div>`).join('')}
+function studyScheduleContent(){
+  const {today,plan,day,remind}=studyScheduleDraft;
+  const year=today.getFullYear(), month=today.getMonth();
+  const first=new Date(year,month,1);
+  const end=new Date(year,month+1,0).getDate();
+  const leading=(first.getDay()+6)%7;
+  const week=studyWeekDays(today);
+  const scheduled=week.filter(date=>date.getMonth()===month&&Number(plan[date.getDate()])>0);
+  const weekHours=scheduled.reduce((sum,date)=>sum+Number(plan[date.getDate()]),0);
+  const selected=new Date(year,month,day);
+  return `<div class="sd-split sd-schedule">
+    <section class="sd-card">
+      <div class="sd-heading"><h2>${year} 年 ${month+1} 月</h2><span class="sd-pill doing">本周 ${studyShortDate(week[0])} – ${studyShortDate(week[6])}</span></div>
+      <div class="sd-month" role="group" aria-label="选择学习安排日期">
+        ${[...'一二三四五六日'].map(label=>`<span class="sd-weekday" aria-hidden="true">${label}</span>`).join('')}
+        ${'<span aria-hidden="true"></span>'.repeat(leading)}
+        ${Array.from({length:end},(_,index)=>{
+          const number=index+1;
+          const date=new Date(year,month,number);
+          const hours=Number(plan[number])||0;
+          return `<button type="button" class="sd-day${date>=week[0]&&date<=week[6]?' in-week':''}" data-schedule-day="${number}" aria-label="${month+1} 月 ${number} 日，${hours?hours+' 小时':'未安排'}" aria-pressed="${number===day}"${number===today.getDate()?' aria-current="date"':''} onclick="selectStudyScheduleDay(${number})"><b>${number}</b>${hours?`<small>${hours} 小时</small>`:''}</button>`;
+        }).join('')}
       </div>
-      <div style="margin-top:12px;font-size:12px;color:var(--ink2);line-height:2">
-        <div>✅ 信息采集完成 · 已定位重点知识模块</div>
-        <div>✅ 能力自评完成 · 已生成知识漏洞图谱</div>
-        <div>✅ 学情测评完成 · 个性化教材排期中</div>
-      </div>
+      <p class="sd-hint">浅蓝色表示本周，选择日期可编辑学习时长。</p>
+    </section>
+    <div class="sd-stack">
+      <section class="sd-card"><div class="sd-heading"><h2>本周安排</h2></div>
+        <div class="sd-mini-metrics"><div><b>${scheduled.length} 天</b>已安排</div><div><b>${weekHours} 小时</b>计划时长</div></div>
+        ${scheduled.length?`<ul class="sd-scheduled-list">${scheduled.map(date=>`<li><span>${studyShortDate(date)} · 周${'日一二三四五六'[date.getDay()]}</span><b>${Number(plan[date.getDate()])} 小时</b></li>`).join('')}</ul>`:'<p class="sd-hint">本周暂无安排</p>'}
+      </section>
+      <section class="sd-card"><div class="sd-heading"><h2>${month+1} 月 ${day} 日 · 周${'日一二三四五六'[selected.getDay()]}</h2><span class="sd-pill doing">已选日期</span></div>
+        <span class="sd-hint">学习时长</span>
+        <div class="sd-slots" role="group" aria-label="选择学习时长">${TIME_SLOTS.map(hours=>`<button type="button" data-schedule-hours="${hours}" aria-pressed="${(Number(plan[day])||0)===hours}" onclick="setStudyScheduleHours(${hours})">${hours?hours+' 小时':'不安排'}</button>`).join('')}</div>
+        <label class="sd-remind">规划师致电提醒<input type="checkbox" ${remind?'checked':''} onchange="studyScheduleDraft.remind=this.checked"></label>
+        <div class="sd-save"><button type="button" class="btn" onclick="saveTimePlan()">保存学习时间</button></div>
+      </section>
     </div>
-    <div class="card" style="margin-bottom:10px">
-      <h4>③ 后续服务</h4>
-      <div class="cell" onclick="pushPage(pageTextbook)"><div class="ci" style="background:#F1EFFA;color:#7A5CD6">${IC.book}</div><div class="ct"><b>个性化教材</b><small>可查看 / 打印电子教材</small></div>${arw()}</div>
-      <div class="cell" onclick="openGroup()"><div class="ci" style="background:var(--green-bg);color:#27A566">${IC.people}</div><div class="ct"><b>伴学群</b><small>身份确认后进群领资料</small></div>${arw()}</div>
-    </div>
-  </div>
-  <div class="setup-foot">
-    <button class="btn ghost" onclick="openGroup()">伴学群</button>
-    <button class="btn" onclick="pushPage(pageCoursePlay)">进入课程学习</button>
   </div>`;
 }
-SETUP_PAGES[1]=pageSetup1; SETUP_PAGES[2]=pageSetup2; SETUP_PAGES[3]=pageSetup3;
-
-function playChap(i){
-  const c=CHAPTERS[i];
-  openModal(`<h4>${c.t}</h4><p class="sub">${c.d}</p>
-  <div style="height:150px;border-radius:14px;margin:12px 0;background:linear-gradient(135deg,#2F3A4E,#4A5A78);display:flex;align-items:center;justify-content:center;color:#fff">
-    <div style="text-align:center"><div style="font-size:34px">▶</div><div style="font-size:11px;opacity:.8;margin-top:4px">${c.p===0?'开始学习':c.p===100?'重新观看':'继续学习 · '+c.p+'%'}</div></div>
-  </div>
-  <button class="btn" onclick="closeModal();courseChapter=${i};pushPage(pageCoursePlay);toast('已切换：${c.t}（演示）')">进入播放页</button>`);
+function redrawStudySchedule(selector){
+  const detail=document.getElementById('study-schedule-detail');
+  detail.innerHTML=studyScheduleContent();
+  detail.querySelector(selector)?.focus({preventScroll:true});
 }
+function selectStudyScheduleDay(day){
+  studyScheduleDraft.day=day;
+  redrawStudySchedule(`[data-schedule-day="${day}"]`);
+}
+function setStudyScheduleHours(hours){
+  const {plan,day}=studyScheduleDraft;
+  if(hours) plan[day]=hours;
+  else delete plan[day];
+  redrawStudySchedule(`[data-schedule-hours="${hours}"]`);
+}
+function saveTimePlan(){
+  const {today,plan,remind}=studyScheduleDraft;
+  const lastDay=new Date(today.getFullYear(),today.getMonth()+1,0).getDate();
+  const entries=Object.entries(plan).filter(([day,hours])=>Number(day)>=1&&Number(day)<=lastDay&&TIME_SLOTS.includes(Number(hours))&&Number(hours)>0);
+  const total=entries.reduce((sum,[,hours])=>sum+Number(hours),0);
+  if(!entries.length&&!Object.values(savedStudySchedule(today)).some(hours=>Number(hours)>0)){
+    toast('请至少选择 1 天学习时间'); return;
+  }
+  Object.assign(U.setup,{
+    dayPlan:Object.fromEntries(entries.map(([day,hours])=>[day,Number(hours)])),
+    dayPlanMonth:myDateKey(today).slice(0,7), callRemind:remind?'是':'否',
+    studyDays:entries.length+' 天', studyTime:'共 '+total+' 小时', planSaved:true
+  });
+  popPage(); toast('学习安排已保存'+(remind&&entries.length?'，将致电提醒':''));
+}
+
+/* ---------- 课程播放 ---------- */
 let courseChapter=2;
+function playerLessonEntries(){
+  const demo=courseDemo();
+  return demo?Object.entries(demo.lessons):U.activeSubject?[]:CHAPTERS.map((lesson,index)=>[String(index),lesson]);
+}
+function activeCourseLesson(entries){
+  const id=courseDemo()?(courseStudy().playing||studyTopic()):String(courseChapter);
+  return entries.find(([key])=>key===id)||entries[0]||[];
+}
+function recommendedCourseOrder(demo,study){
+  const chapters=demo.textbooks[study.textbook]||Object.values(demo.textbooks)[0];
+  const ids=chapters.flatMap(([,lessons])=>lessons);
+  const topic=studyTopic();
+  const remaining=ids.slice(Math.max(0,ids.indexOf(topic)));
+  return [...new Set([study.result.lesson,topic,...remaining])].filter(id=>Object.hasOwn(demo.lessons,id));
+}
+function courseLessonProgress(id){
+  return courseStudy().practice?.[id];
+}
+function courseLessonTitle(lesson){
+  return lesson?.t.replace(/^\d+\.\s+/,'');
+}
+function coursePractice(lesson){
+  return COURSE_PRACTICE[courseLessonTitle(lesson)];
+}
+function courseReviewContent(lesson){
+  const title=courseLessonTitle(lesson);
+  const notes=COURSE_REVIEW[title];
+  if(!notes) return null;
+  const [method,keyPoint,mistake,example]=notes;
+  const reference=lesson.question?lesson:Object.values(COURSE_DEMOS['中考|数学'].lessons).find(item=>item.t===title);
+  return {steps:method.split(' → '),keyPoint,mistake,example:example||(reference?`${reference.question} 答案：${reference.choices[reference.answer]}`:'')};
+}
+function renderCourseReview(lesson){
+  const review=courseReviewContent(lesson);
+  if(!review) return '';
+  return `<section class="course-player-detail" aria-labelledby="course-review-title">
+    <h2 id="course-review-title">本课回顾</h2>
+    <dl class="course-review-list">
+      <div><dt>知识点</dt><dd>
+        <p>${review.keyPoint}</p>
+        ${review.example?`<p class="course-review-example">例：${review.example}</p>`:''}
+      </dd></div>
+      <div id="course-review-method" tabindex="-1"><dt>做题方法</dt><dd>
+        <ol>${review.steps.map(step=>`<li>${step}</li>`).join('')}</ol>
+        <p class="course-review-caution">易错提醒：${review.mistake}</p>
+      </dd></div>
+    </dl>
+  </section>`;
+}
+function showCourseReview(){
+  popPage();
+  const method=$id('course-review-method');
+  if(method){
+    method.focus({preventScroll:true});
+    method.scrollIntoView({block:'center'});
+  }
+}
+function openLessonPractice(id){
+  const [key,lesson]=activeCourseLesson(playerLessonEntries());
+  if(key!==id||!coursePractice(lesson)) return;
+  const study=courseStudy();
+  study.practice??={};
+  study.practice[id]??={watched:true};
+  pushPage(pageLessonPractice);
+}
+function pageLessonPractice(){
+  const [id,lesson]=activeCourseLesson(playerLessonEntries());
+  const [question,...choices]=coursePractice(lesson);
+  const saved=courseLessonProgress(id);
+  const order=choices.map((_,index)=>(index+question.length)%choices.length);
+  return head('课后练习',captureQuestionButton('练习'))+`<form class="card study-task" data-practice-lesson="${id}" onsubmit="event.preventDefault();submitLessonPractice(this)">
+    <h3>${lesson.t}</h3>
+    <fieldset><legend>${question}</legend>
+      ${order.map(index=>`<label><input type="radio" name="answer" value="${index}" required ${saved?.answer===index?'checked':''}><span>${choices[index]}</span></label>`).join('')}
+    </fieldset>
+    ${saved?.answer===undefined?'':`<div class="lesson-practice-feedback">
+      <p role="status">${saved.answer===0?'回答正确':'回答有误。正确答案：'+choices[0]}</p>
+      ${saved.answer!==0&&courseReviewContent(lesson)?'<button type="button" class="btn sm lite" onclick="showCourseReview()">查看本课要点</button>':''}
+    </div>`}
+    <button type="submit" class="btn">提交答案</button>
+    ${saved?.answer===undefined?'':`<button type="button" class="btn lite lesson-practice-back" onclick="popPage()">返回课程</button>`}
+  </form>`;
+}
+function submitLessonPractice(form){
+  const progress=courseLessonProgress(form.dataset.practiceLesson);
+  const value=new FormData(form).get('answer');
+  if(!progress||value===null) return;
+  progress.answer=Number(value);
+  refresh();
+  screen.querySelector('.lesson-practice-feedback')?.scrollIntoView({block:'nearest'});
+}
 function pageCoursePlay(){
-  const current=CHAPTERS[courseChapter]||CHAPTERS[2];
-  return head('课程播放')+`
+  const demo=courseDemo();
+  const [type,direction,subject]=U.activeSubject.split('|');
+  const name=subject?subObj(type,direction,subject).name:'中考数学技巧课';
+  const entries=playerLessonEntries();
+  const [active,lesson]=activeCourseLesson(entries);
+  const current=lesson||{t:name};
+  const study=courseStudy();
+  const practice=courseLessonProgress(active);
+  const progress=practice?.watched?100:current.p||0;
+  const recommended=demo&&study.result?recommendedCourseOrder(demo,study):[];
+  return head('课程播放',captureQuestionButton('课程'))+`
   <div class="course-player-layout">
     <div class="course-player-main">
       <div class="course-video" aria-label="课程视频演示占位">
         <span class="course-video-tag">试听模式 · 演示画面</span>
         <div class="course-video-center"><button type="button" class="course-video-play" aria-label="播放" onclick="toast('演示页面未接入视频')">▶</button><p>${current.t}</p></div>
-        <div class="course-video-bar"><div class="course-video-track"><i style="width:${current.p}%"></i></div><div class="course-video-controls"><span>▶</span><span>进度 ${current.p}%</span><span class="course-video-spacer"></span><span>演示播放器</span></div></div>
+        <div class="course-video-bar"><div class="course-video-track"><i style="width:${progress}%"></i></div><div class="course-video-controls"><span>▶</span><span>进度 ${progress}%</span><span class="course-video-spacer"></span><span>演示播放器</span></div></div>
       </div>
-      <section class="course-player-detail"><h2>${current.t}</h2><p class="course-player-meta">张老师 · 中考数学技巧课 · 共 5 章 41 讲</p>
-        <div class="course-player-tabs" role="tablist" aria-label="课程信息"><button type="button" role="tab" aria-selected="true" onclick="coursePlayerTab(0)">课程简介</button><button type="button" role="tab" aria-selected="false" onclick="coursePlayerTab(1)">学习提示</button><button type="button" role="tab" aria-selected="false" onclick="coursePlayerTab(2)">课程评价</button></div>
-        <div class="course-player-tabbody" id="course-player-tabbody"><h3>关于本课程</h3><p>中考数学技巧课 · 共 5 章 41 讲 · 搭配点星笔随堂作答</p></div>
-      </section>
+      ${U.activeSubject?`<div class="course-study-tools">
+        ${demo&&!study.result?`<button type="button" class="btn lite" onclick="pushPage(pageSetup2)">薄弱点测评</button>`:''}
+        ${demo&&study.result?`<button type="button" class="btn lite" onclick="pushPage(pageStudyResult)">查看摸底结果</button>`:''}
+        <button type="button" class="btn lite" onclick="pushPage(pageSetupTime)">安排学习时间</button>
+      </div>`:''}
+      ${coursePractice(lesson)?`<section class="course-lesson-practice" aria-label="课后练习">
+        <div><h2>课后练习</h2><p>${practice?.answer!==undefined?'本课已作答':practice?.watched?'本课已标记看完':'看完本课后完成 1 道同类题'}</p></div>
+        <button type="button" class="btn sm" onclick="openLessonPractice('${active}')">${practice?.answer!==undefined?'查看或重做':progress===100?'开始练习':'标记看完并答题'}</button>
+      </section>`:''}
+      ${renderCourseReview(lesson)}
     </div>
-    <aside class="course-player-sidebar"><div class="course-player-sidehead"><h2>课程目录</h2><p>共 5 章 41 讲</p></div><div class="course-player-section">课程章节</div><div class="course-player-lessons">
-      ${CHAPTERS.map((c,i)=>`<button type="button" class="course-player-lesson ${i===courseChapter?'on':''}" ${i===courseChapter?'aria-current="true"':''} onclick="selectCourseChapter(${i})"><span class="course-player-num">${i+1}</span><span class="course-player-text"><b>${c.t}</b><small>${c.d}</small></span><span class="course-player-mark">${i===courseChapter?'当前':c.p===100?'✓':''}</span></button>`).join('')}
-    </div><p class="course-player-foot">当前为演示页面，尚未接入视频播放。</p></aside>
+    <aside class="course-player-sidebar">
+      ${recommended.length?`<section class="course-recommendations" aria-label="推荐看课顺序">
+        <h3>推荐看课顺序</h3>
+        ${study.result.method==='upload'?'<small>试卷分析演示</small>':''}
+        <ol>${recommended.map(id=>`<li><button type="button" aria-pressed="${id===active}" onclick="selectCourseChapter('${id}')">${demo.lessons[id].t}</button></li>`).join('')}</ol>
+      </section>`:''}
+      <section class="course-directory" aria-labelledby="course-directory-title">
+        <div class="course-player-sidehead"><h2 id="course-directory-title">课程目录</h2></div>
+        <div class="course-player-lessons">
+          ${entries.length?entries.map(([id,c],i)=>`<button type="button" class="course-player-lesson ${id===active?'on':''}" ${id===active?'aria-current="true"':''} onclick="selectCourseChapter('${id}')"><span class="course-player-num">${i+1}</span><span class="course-player-text"><b>${c.t}</b></span><span class="course-player-mark">${id===active?'当前':courseLessonProgress(id)?.answer!==undefined?'已练':courseLessonProgress(id)?.watched||c.p===100?'已看':''}</span></button>`).join(''):'<p class="empty">暂无课程</p>'}
+        </div>
+      </section>
+    </aside>
   </div>`;
 }
-function selectCourseChapter(i){
-  if(!CHAPTERS[i]) return;
-  courseChapter=i; refresh(); toast('已切换章节（演示）');
+function selectCourseChapter(id){
+  if(courseDemo()){
+    courseStudy().playing=id;
+  }else{
+    courseChapter=Number(id);
+  }
+  refresh();
 }
-function coursePlayerTab(i){
-  const tabs=document.querySelectorAll('.course-player-tabs [role="tab"]');
-  const body=document.getElementById('course-player-tabbody');
-  if(!body||i<0||i>2) return;
-  tabs.forEach((tab,n)=>tab.setAttribute('aria-selected',String(n===i)));
-  body.innerHTML=[
-    '<h3>关于本课程</h3><p>中考数学技巧课 · 共 5 章 41 讲 · 搭配点星笔随堂作答</p>',
-    '<h3>随堂学习</h3><p>可搭配点星笔进行随堂作答，书写痕迹实时上传给老师批阅。</p>',
-    '<h3>课程评价</h3><p class="course-player-rating">★★★★★　4.9</p><p>“讲得特别清楚，二次函数那章看完月考直接多了 8 分，点星笔写完自动上传，老师还会批改。”</p><p>— 初三 林同学 · 家长已确认</p>'
-  ][i];
-}
-
 /* ================= 直播 ================= */
 const LIVES=[
   {date:'11-12 19:30', title:'二次函数压轴突破', t:'张老师', st:'next'},
@@ -1175,28 +1959,41 @@ function pageLive(){
 /* ================= 试卷 / 答题 ================= */
 function pagePapers(){
   return head('试卷')+`
-  <div class="discover-detail-intro"><h2>选择题库</h2><p class="sub">三大题库 · 作答后自动批改并计入答题记录</p></div>
-  <div class="paper-choices">
-  ${Object.entries(PAPERS).map(([k,p])=>`
-  <div class="card paper-choice" style="cursor:pointer" onclick="startPaper('${k}')">
-    <div style="display:flex;align-items:center;gap:12px">
-      <div style="width:52px;height:52px;border-radius:14px;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:15px;${k==='mock'?'background:linear-gradient(135deg,#4C86FF,#2F66E0)':k==='sync'?'background:linear-gradient(135deg,#34C77B,#1E9E5C)':'background:linear-gradient(135deg,#FFB13A,#F26B1D)'}">${p.name[0]}</div>
-      <div style="flex:1"><b style="font-size:15px">${p.name}</b><small style="display:block;color:var(--ink3);font-size:11.5px;margin-top:3px">${p.desc}</small></div>${arw()}
-    </div>
-  </div>`).join('')}</div>
-  <div class="card paper-method"><h4>答题方式</h4><p class="sub">支持文字输入、点星笔手写、拍照上传三种作答方式，点星笔书写痕迹实时上传给老师批阅</p></div>`;
+  <div class="paper-choices" role="group" aria-label="试卷与测验入口">
+    ${Object.entries(PAPERS).map(([k,p])=>`
+      <button type="button" class="paper-choice" data-paper="${k}" onclick="startPaper('${k}')">
+        <span class="paper-choice-icon" aria-hidden="true">${IC.doc}</span>
+        <span class="paper-choice-copy"><b>${p.name}</b><small>${p.desc}</small></span>
+        ${arw()}
+      </button>`).join('')}
+    <button type="button" class="paper-choice" data-paper="ai" onclick="pushPage(pageAiAssessment)">
+      <span class="paper-choice-icon" aria-hidden="true">${IC.ai}</span>
+      <span class="paper-choice-copy"><b>AI 测验</b><small>测评卷与讲评课</small></span>
+      ${arw()}
+    </button>
+  </div>`;
 }
 function startPaper(k){
   S.paper=k; S.idx=0; S.ans={}; S.done=false; S.m='text'; hwStrokes=0;
   pushPage(pageExam);
 }
+function activeExamDraft(){
+  return stack.at(-1)===pageWrongRedo?wrongRedoAttempt:S;
+}
+function examAnswerFields(q,draft){
+  if(!q.opts) return `<div id="ans-area">${ansArea(draft)}</div>`;
+  return q.opts.map((option,index)=>`<div class="opt ${draft.ans[q.id]===index?'on':''}" onclick="pickOpt(this,${index})"><span class="ol">${'ABCD'[index]}</span>${option}</div>`).join('');
+}
+function questionIsCorrect(q,answer){
+  return q.opts?answer===q.ans:answer!==undefined&&String(answer).replace(/\s/g,'')===q.ans.replace(/\s/g,'');
+}
 function pageExam(){
   const q=Q[S.idx], p=PAPERS[S.paper];
   const answered=Object.keys(S.ans).length;
-  return head(p.name, `<span id="q-count" style="font-size:12px;color:var(--ink3)" onclick="openSheet()">答题卡 ${answered}/${Q.length}</span>`)+`
+  return head(p.name, `<div class="capture-question-actions">${captureQuestionButton('答题')}<span id="q-count" style="font-size:12px;color:var(--ink3)" onclick="openSheet()">答题卡 ${answered}/${Q.length}</span></div>`)+`
   <div class="qbar">第 <b>${S.idx+1}</b> 题 / 共 ${Q.length} 题 · ${q.type==='single'?'单选题':q.type==='fill'?'填空题':'解答题'}</div>
   <div class="stem">${q.stem}</div>
-  ${q.opts? q.opts.map((o,i)=>`<div class="opt ${S.ans[q.id]===i?'on':''}" onclick="pickOpt(this,${i})"><span class="ol">${'ABCD'[i]}</span>${o}</div>`).join('') : `<div id="ans-area">${ansArea()}</div>`}
+  ${examAnswerFields(q,S)}
   <div style="display:flex;gap:9px;margin-top:16px">
     ${S.idx>0?'<button class="btn ghost" style="flex:1" onclick="S.idx--;refresh()">上一题</button>':''}
     ${S.idx<Q.length-1?'<button class="btn" style="flex:2" onclick="nextQ()">下一题</button>':'<button class="btn green" style="flex:2" onclick="submitPaper()">交卷并评分</button>'}
@@ -1204,30 +2001,30 @@ function pageExam(){
   <div class="dots" style="margin-top:14px">${Q.map((_,i)=>`<i class="${i===S.idx?'on':''}"></i>`).join('')}</div>`;
 }
 /* 非选择题的作答区：切换作答方式时只重绘这一块，不整页刷新 */
-function ansArea(){
-  const q=Q[S.idx];
+function ansArea(draft=activeExamDraft()){
+  const q=Q[draft.idx];
   return `<div class="field"><label>作答方式</label>
       <div class="segs">
-        ${[['text','文字输入'],['pen','点星笔手写'],['photo','拍照上传']].map(([k,t])=>`<span class="seg ${S.m===k?'on':''}" onclick="S.m='${k}';swapAns()">${t}</span>`).join('')}
+        ${[['text','文字输入'],['pen','点星笔手写'],['photo','拍照上传']].map(([k,t])=>`<span class="seg ${draft.m===k?'on':''}" onclick="activeExamDraft().m='${k}';swapAns()">${t}</span>`).join('')}
       </div>
     </div>
-    ${S.m==='text'?`<input class="input" id="fill-ans" placeholder="输入作答内容" value="${String(S.ans[q.id]||'').replace(/"/g,'&quot;')}" oninput="S.ans[${q.id}]=this.value">`:''}
-    ${S.m==='pen'?`<canvas id="hw" width="500" height="300"></canvas><div style="display:flex;gap:8px;margin-top:8px"><button class="btn ghost sm" onclick="clearHw()">清空</button><span style="font-size:11px;color:var(--ink3);align-self:center">点星笔书写痕迹将实时上传</span></div>`:''}
-    ${S.m==='photo'?`<div class="answerbox" onclick="toast('已模拟拍照上传，AI 识别作答内容')"><div style="text-align:center;color:var(--ink3);font-size:12.5px;padding:8px 0">${IC.camera.replace('<svg','<svg style="width:26px;height:26px;fill:none;stroke:#9AA3B0;stroke-width:1.7"')}<br>点击拍照上传作答</div></div>`:''}`;
+    ${draft.m==='text'?`<input class="input" id="fill-ans" placeholder="输入作答内容" value="${myText(draft.ans[q.id])}" oninput="activeExamDraft().ans[${q.id}]=this.value">`:''}
+    ${draft.m==='pen'?`<canvas id="hw" width="500" height="300"></canvas><div style="display:flex;gap:8px;margin-top:8px"><button class="btn ghost sm" onclick="clearHw()">清空</button><span style="font-size:11px;color:var(--ink3);align-self:center">点星笔书写痕迹将实时上传</span></div>`:''}
+    ${draft.m==='photo'?`<div class="answerbox" onclick="toast('已模拟拍照上传，AI 识别作答内容')"><div style="text-align:center;color:var(--ink3);font-size:12.5px;padding:8px 0">${IC.camera.replace('<svg','<svg style="width:26px;height:26px;fill:none;stroke:#9AA3B0;stroke-width:1.7"')}<br>点击拍照上传作答</div></div>`:''}`;
 }
 function swapAns(){
   const box=document.getElementById('ans-area');
   if(!box) return;
   box.innerHTML=ansArea();
-  if(S.m==='pen') initHw();
+  if(activeExamDraft().m==='pen') initHw();
 }
 function pickOpt(el,i){
-  const q=Q[S.idx]; S.ans[q.id]=i;
+  const draft=activeExamDraft(); draft.ans[Q[draft.idx].id]=i;
   const box=el.parentNode;
   [...box.children].forEach(c=>c.classList.remove('on'));
   el.classList.add('on');
   const cnt=document.getElementById('q-count');
-  if(cnt) cnt.textContent='答题卡 '+Object.keys(S.ans).length+'/'+Q.length;
+  if(cnt) cnt.textContent='答题卡 '+Object.keys(draft.ans).length+'/'+Q.length;
 }
 function nextQ(){ S.idx++; refresh(); }
 let hwStrokes=0;
@@ -1257,12 +2054,12 @@ function submitPaper(){
   let right=0;
   Q.forEach(q=>{
     const a=S.ans[q.id];
-    const ok = q.opts ? a===q.ans : (a!==undefined && String(a).replace(/\s/g,'')===q.ans.replace(/\s/g,''));
+    const ok=questionIsCorrect(q,a);
     if(ok) right++;
     const exist=S.records.find(r=>r.q===q.id);
     if(exist){ exist.ok=ok; exist.d='11-10'; } else S.records.push({d:'11-10', q:q.id, ok, kp:q.kp});
   });
-  U.hours.today=+(U.hours.today+0.5).toFixed(1); U.hours.week=+(U.hours.week+0.5).toFixed(1); U.hours.total=+(U.hours.total+0.5).toFixed(1);
+  addStudyHours(0.5,'练习答题',PAPERS[S.paper]?.name||'试卷练习');
   S.result={right, wrong:Q.length-right};
   pushPage(pageReport);
 }
@@ -1281,29 +2078,34 @@ function pageReport(){
   <div class="card"><h4>逐题解析</h4>
     ${Q.map((q,i)=>{
       const a=S.ans[q.id];
-      const ok=q.opts?a===q.ans:(a!==undefined&&String(a).replace(/\s/g,'')===q.ans.replace(/\s/g,''));
+      const ok=questionIsCorrect(q,a);
       return `<div class="cell" onclick="S.idx=${i};pushPage(pageAnalysis)">
         <div class="ci" style="background:${ok?'var(--green-bg)':'var(--red-bg)'};color:${ok?'#1E9E5C':'#E4574F'}">${ok?IC.check:IC.pen}</div>
         <div class="ct"><b>第 ${i+1} 题 · ${ok?'回答正确':'回答错误'}</b><small>考点：${q.kp} · 点击查看解析</small></div>${arw()}</div>`;
     }).join('')}
   </div>
-  <button class="btn lite" onclick="popPage();popPage();goTab('discover')">返回</button>`;
+  <button class="btn lite" onclick="popPage();popPage()">返回试卷</button>`;
 }
 function pageAnalysis(){
   const q=Q[S.idx];
-  const a=S.ans[q.id];
-  const ok=q.opts?a===q.ans:(a!==undefined&&String(a).replace(/\s/g,'')===q.ans.replace(/\s/g,''));
+  const navigation=`
+    ${S.idx>0?'<button class="btn ghost" style="flex:1" onclick="S.idx--;refresh()">上一题</button>':''}
+    ${S.idx<Q.length-1?'<button class="btn" style="flex:1" onclick="S.idx++;refresh()">下一题</button>':'<button class="btn" style="flex:1" onclick="popPage()">返回结果</button>'}`;
+  return renderQuestionAnalysis(S.idx,S.ans[q.id],navigation);
+}
+function renderQuestionAnalysis(index,a,navigation){
+  const q=Q[index];
+  const ok=questionIsCorrect(q,a);
   return head('题目解析')+`
-  <div class="qbar">第 <b>${S.idx+1}</b> 题 · <span class="tag ${ok?'green':'red'}">${ok?'回答正确':'回答错误'}</span></div>
+  <div class="qbar">第 <b>${index+1}</b> 题 · <span class="tag ${ok?'green':'red'}">${ok?'回答正确':'回答错误'}</span></div>
   <div class="stem">${q.stem}</div>
   ${q.opts?q.opts.map((o,i)=>`<div class="opt ${i===q.ans?'ok':(a===i?'bad':'')}"><span class="ol">${'ABCD'[i]}</span>${o}</div>`).join(''):
-    `<div class="ana"><div class="al"><span class="dot"></span>你的作答</div><p>${a!==undefined&&a!==''?String(a):'（未作答）'}</p></div>
+    `<div class="ana"><div class="al"><span class="dot"></span>你的作答</div><p>${a!==undefined&&a!==''?myText(a):'（未作答）'}</p></div>
      <div class="ana"><div class="al"><span class="dot" style="background:var(--green)"></span>正确答案</div><p>${q.ans}</p></div>`}
   <div class="ana"><div class="al"><span class="dot"></span>解析</div><p>${q.ana}</p></div>
   <div class="ana" style="display:flex;align-items:center;gap:8px"><div class="al" style="margin:0"><span class="dot" style="background:var(--gold)"></span>考点</div><span class="tag blue">${q.kp}</span><span class="spacer" style="flex:1"></span><span style="font-size:11.5px;color:var(--ink3);cursor:pointer" onclick="toast('已举报，老师会尽快核实')">举报</span></div>
   <div style="display:flex;gap:9px;margin-top:14px">
-    ${S.idx>0?'<button class="btn ghost" style="flex:1" onclick="S.idx--;refresh()">上一题</button>':''}
-    ${S.idx<Q.length-1?'<button class="btn" style="flex:1" onclick="S.idx++;refresh()">下一题</button>':'<button class="btn" style="flex:1" onclick="popPage()">返回结果</button>'}
+    ${navigation}
   </div>`;
 }
 
@@ -1347,10 +2149,10 @@ function pageCalendar(){
 }
 
 /* ================= AI 测评 ================= */
-function pageAiTest(){
-  return head('AI 测评')+`
-  <section class="ai-assessment" aria-label="AI 测评">
-    <div class="ai-assessment-intro"><h2>了解学习情况，找到薄弱知识点</h2><p>选择测评卷作答，完成后可查看测评讲评课。</p></div>
+function pageAiAssessment(){
+  return head('AI 测验')+`
+  <section class="ai-assessment" aria-label="AI 测验">
+    <header class="papers-panel-heading"><p>了解薄弱知识点，完成测评后可查看讲评课</p></header>
     <div class="ai-assessment-tabs" role="tablist" aria-label="测评内容">
       <button type="button" role="tab" aria-selected="true" id="at-t1" onclick="aiTab(0)">测评卷</button>
       <button type="button" role="tab" aria-selected="false" id="at-t2" onclick="aiTab(1)">测评讲评课</button>
@@ -1380,7 +2182,7 @@ function startAiTest(i){
 let T=null;
 function pageAiAnswer(){
   const q=Q[T.idx];
-  return head(T.paper, `<span id="ai-count" style="font-size:12px;color:var(--ink3)" onclick="toast('AI 测评不可回退修改已交答案')">答题卡 ${Object.keys(T.ans).length}/${T.n}</span>`)+`
+  return head(T.paper, `<div class="capture-question-actions">${captureQuestionButton('测评')}<span id="ai-count" style="font-size:12px;color:var(--ink3)" onclick="toast('AI 测评不可回退修改已交答案')">答题卡 ${Object.keys(T.ans).length}/${T.n}</span></div>`)+`
   <div class="qbar">AI 组卷 · 第 <b>${T.idx+1}</b> 题 / 共 ${T.n} 题 · 难度自适应</div>
   <div class="stem">${q.stem}</div>
   ${q.opts? q.opts.map((o,i)=>`<div class="opt ${T.ans[q.id]===i?'on':''}" onclick="pickAiOpt(this,${i})"><span class="ol">${'ABCD'[i]}</span>${o}</div>`).join('') :
@@ -1409,6 +2211,11 @@ function submitAiTest(){
     subs:{数学:88, 物理:72, 英语:85, 化学:64}, week:Math.round(right/T.n*10)};
   pushPage(pageAiReport);
 }
+function returnToAiTests(){
+  popPage();
+  popPage();
+  document.getElementById('at-t1')?.focus();
+}
 function pageAiReport(){
   const r=T.report;
   const subs=Object.entries(r.subs);
@@ -1434,7 +2241,7 @@ function pageAiReport(){
     <div class="ct"><b>${k}</b><small>掌握度 ${[42,55,68][i]}% · 建议 ${['3 天专项','2 天专项','1 天巩固'][i]}</small></div>
     <button class="btn sm lite" onclick="toast('已生成《${k.split('（')[0]}》专项练习（演示）')">练一练</button></div>`).join('')}
   </div>
-  <button class="btn lite" onclick="popPage();popPage()">返回测评列表</button>`;
+  <button class="btn lite" onclick="returnToAiTests()">返回测评列表</button>`;
 }
 
 /* ================= 打卡 / 学习记录 ================= */
@@ -1469,27 +2276,61 @@ function doCheckin(){
   const txt=document.getElementById('ck-txt').value.trim();
   if(!txt){ toast('请填写学习内容'); return; }
   const now=new Date();
-  U.checkins.unshift({date:String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0'), txt, imgs:ckImgs});
-  U.hours.today=+(U.hours.today+0.2).toFixed(1); U.hours.week=+(U.hours.week+0.2).toFixed(1); U.hours.total=+(U.hours.total+0.2).toFixed(1);
+  const day=myDateKey(now);
+  U.checkins.unshift({day, date:day.slice(5), txt, imgs:ckImgs});
+  addStudyHours(0.2,'学习打卡',txt,now);
   ckImgs=0; refresh(); toast('打卡成功，已同步给伴学老师');
 }
+function studyHoursTrend(days,values){
+  const limit=Math.max(2.5,Math.ceil(Math.max(...values)*2)/2);
+  const points=values.map((value,index)=>[69+82*index,128-value/limit*106]);
+  const path=points.map(([x,y],index)=>`${index?'L':'M'}${x} ${y}`).join(' ');
+  const labels=days.map((day,index)=>`${day.getMonth()+1}.${day.getDate()} ${values[index]} 小时`).join('，');
+  return `<svg class="sd-trend" viewBox="0 0 600 140" preserveAspectRatio="none" role="img" aria-label="${labels}">
+    ${Array.from({length:6},(_,index)=>{
+      const y=22+index*106/5;
+      const value=+(limit*(1-index/5)).toFixed(2);
+      return `<path class="sd-gridline" d="M28 ${y}H599"/><text x="23" y="${y+3}" text-anchor="end">${value}</text>`;
+    }).join('')}
+    <path d="${path}L561 128L69 128Z" class="sd-area"/><path class="sd-line" d="${path}"/>
+    ${points.map(([x,y])=>`<circle cx="${x}" cy="${y}" r="3"/>`).join('')}
+  </svg><div class="sd-trend-dates" aria-hidden="true">${days.map(day=>`<span>${studyShortDate(day)}</span>`).join('')}</div>`;
+}
 function pageStudyLog(){
-  return head('学习记录')+`
-  <div class="course-hero">
-    <b>今日学习 ${(U.hours.today).toFixed(1)} 小时</b>
-    <p>坚持每天学习，向目标考试时间冲刺</p>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-    <div class="card" style="margin:0;text-align:center"><div style="font-size:11.5px;color:var(--ink3)">本周学习时长</div><b style="font-size:22px;color:var(--blue)">${(U.hours.week).toFixed(1)}<span style="font-size:12px"> 小时</span></b></div>
-    <div class="card" style="margin:0;text-align:center"><div style="font-size:11.5px;color:var(--ink3)">合计时长</div><b style="font-size:22px;color:var(--blue)">${(U.hours.total).toFixed(1)}<span style="font-size:12px"> 小时</span></b></div>
-  </div>
-  <div class="card"><h4>时长构成</h4>
-    ${[['课程学习',46],['练习答题',30],['AI 测评',14],['答疑',10]].map(([k,v])=>`<div class="sbar"><div class="srow"><b>${k}</b><div class="track"><i style="width:${v}%"></i></div><span>${v}%</span></div></div>`).join('')}
-  </div>
-  <div class="card"><h4>今日明细</h4>
-    ${U.hours.today>0?`<div class="cell"><div class="ci" style="background:var(--blue-bg);color:var(--blue)">${IC.pen}</div><div class="ct"><b>练习答题 +30 分钟</b><small>模拟测试卷 · ${S.result?S.result.right:2} 题正确</small></div></div>
-    ${U.checkins.length?`<div class="cell"><div class="ci" style="background:var(--green-bg);color:#27A566">${IC.check}</div><div class="ct"><b>学习打卡 +12 分钟</b><small>${U.checkins[0].txt.slice(0,16)}…</small></div></div>`:''}`
-    :'<div class="empty">今天还没有学习记录<br>去「试卷」或「学习打卡」积累学时吧</div>'}
+  const today=new Date();
+  const days=myRecentDays(today,7);
+  const recorded=days.map(day=>U.hours.byDay?.[myDateKey(day)]);
+  const sample=!Object.keys(U.hours.byDay||{}).length;
+  const values=sample?STUDY_HOUR_EXAMPLE:recorded.map(value=>Number.isFinite(value)?value:0);
+  const recent=values.reduce((total,value)=>total+value,0);
+  const todayKey=myDateKey(today);
+  const history=U.hours.entries||[];
+  const entries=sample?[
+    {time:'20:40',type:'课程学习',detail:'数学 · 二次函数专项',minutes:48},
+    {time:'19:50',type:'练习答题',detail:'模拟测试卷',minutes:30},
+    {time:'19:30',type:'学习打卡',detail:'今日学习内容',minutes:12}
+  ]:history.filter(entry=>entry.day===todayKey).slice().reverse();
+  const entriesByType=new Map();
+  for(const entry of history) entriesByType.set(entry.type,(entriesByType.get(entry.type)||0)+entry.minutes);
+  const totalMinutes=[...entriesByType.values()].reduce((total,minutes)=>total+minutes,0);
+  const shares=sample?[['课程学习',46],['练习答题',30],['AI 测评',14],['答疑',10]]
+    :[...entriesByType].map(([type,minutes])=>[type,minutes/totalMinutes*100]);
+  const metrics=[['今日学习',values.at(-1),IC.clock],['近 7 天',recent,IC.plan],['累计学时',U.hours.total,IC.chart]];
+  return head('学时记录')+`<div class="study-detail">
+    <div class="sd-metrics">
+      ${metrics.map(([label,value,icon],index)=>`<div class="sd-card sd-metric"><span class="sd-icon" aria-hidden="true">${icon}</span><div><span>${label}${sample&&index<2?' · 示例':''}</span><p><b>${value.toFixed(1)}</b> 小时</p></div></div>`).join('')}
+    </div>
+    <div class="sd-split sd-hours-split">
+      <section class="sd-card"><div class="sd-heading"><h2>学时趋势</h2><span>${studyShortDate(days[0])} – ${studyShortDate(today)} · 小时${sample?' · 示例':''}</span></div>${studyHoursTrend(days,values)}</section>
+      <section class="sd-card"><div class="sd-heading"><h2>时长构成</h2><span>${sample?'示例':'有明细的学时'}</span></div>
+      ${shares.length?`<div class="sd-composition" aria-hidden="true">${shares.map(([type,value],i)=>`<i class="sd-segment-${i%4}" style="flex:${value}"></i>`).join('')}</div>
+      <ul class="sd-legend">${shares.map(([type,value],i)=>`<li><i class="sd-segment-${i%4}"></i><span>${myText(type)}</span><b>${Math.round(value)}%</b></li>`).join('')}</ul>`:'<p class="sd-empty">暂无学时明细</p>'}</section>
+    </div>
+    <section class="sd-card"><div class="sd-heading"><h2>今日明细</h2><span>${today.getMonth()+1} 月 ${today.getDate()} 日 · ${entries.length} 条记录${sample?' · 示例':''}</span></div>
+      ${entries.length?`<div class="sd-table-wrap"><table class="sd-table"><thead><tr><th scope="col">时间</th><th scope="col">学习类型</th><th scope="col">内容</th><th scope="col">用时</th></tr></thead><tbody>
+        ${entries.map(entry=>`<tr><td>${myText(entry.time)}</td><td>${myText(entry.type)}</td><td>${myText(entry.detail)}</td><td><b>${entry.minutes} 分钟</b></td></tr>`).join('')}
+      </tbody></table></div>`:'<p class="sd-empty">今天暂无学时明细</p>'}
+    </section>
   </div>`;
 }
 
@@ -1507,7 +2348,7 @@ function pageArchive(){
     ${[['升学类型',U.identity],['年级',U.grade||'未选择'],['考试科目',U.subjects.length?U.subjects.join('、'):'未选择'],['目前总分数',U.total?U.total+' 分':'未填写'],['考试时间',U.examDate||'2026-06-20'],['家长联系电话',U.parentPhone||'未填写']].map(([k,v])=>`
     <div class="cell"><div class="ct"><b style="font-size:12.5px;color:var(--ink2);font-weight:600">${k}</b></div><span style="font-size:13px;font-weight:700">${v}</span></div>`).join('')}
     <div class="cell"><div class="ct"><b style="font-size:12.5px;color:var(--ink2);font-weight:600">各科成绩</b></div>
-      <span style="font-size:12px">${Object.entries(U.scores).map(([k,v])=>`<span class="tag blue" style="margin-left:4px">${k} ${v}</span>`).join('')}</span></div>
+      <span class="archive-score-tags">${archiveScoreSummary()}</span></div>
   </div>
   <div class="card"><h4>管理记录</h4><p class="sub">规划师与老师的跟进记录</p>
     ${U.manage.map(m=>`<div class="cell"><div class="ci" style="background:var(--blue-bg);color:var(--blue)">${IC.doc}</div><div class="ct"><b>${m.d} · ${m.t}</b><small>${m.s}</small></div></div>`).join('')}
@@ -1554,13 +2395,48 @@ function saveEdit(){
 }
 
 /* ================= 成绩总览 / 错题 ================= */
+function myScoreHistory(){
+  return U.scoresHis.flatMap((entry,index)=>{
+    if(!Number.isFinite(entry?.v)||entry.v<0||entry.v>100) return [];
+    const example=DEMO_SCORE_HISTORY[index];
+    return [example?.m===entry.m&&example.v===entry.v&&entry.demo!==false&&!entry.subjects ? example : entry];
+  });
+}
+function myScoreRates(exam){
+  return (Array.isArray(exam.subjects)?exam.subjects:[]).flatMap(({name,score,max})=>
+    typeof name==='string'&&Number.isFinite(score)&&Number.isFinite(max)&&max>0&&score>=0&&score<=max
+      ? [[name,score/max*100]] : []);
+}
+function scoreTrend(history,subject){
+  const points=history.flatMap(exam=>{
+    const rate=subject?myScoreRates(exam).find(([name])=>name===subject)?.[1]:exam.v;
+    return rate===undefined?[]:[{m:exam.m,v:Math.round(rate),demo:exam.demo}];
+  });
+  if(!points.length) return '<p class="empty">暂无成绩记录</p>';
+  const data=points.slice(-6);
+  return `<p class="sub">${points.length} 次记录${points.length>6?' · 最近 6 次':''}${data.some(point=>point.demo)?' · 含示例数据':''}</p>
+    <div class="my-score-trend">${lineChart(data,440,190)}</div>`;
+}
+function updateScoreTrend(select){
+  const history=myScoreHistory();
+  const subject=select.value?scoreTrendSubjects(history)[Number(select.value)-1]:'';
+  document.getElementById('my-score-trend').innerHTML=scoreTrend(history,subject);
+}
+function scoreTrendSubjects(history){
+  return [...new Set(history.flatMap(exam=>myScoreRates(exam).map(([name])=>name)))];
+}
 function pageScores(){
-  return head('成绩总览')+`
-  <div class="card"><h4>成绩走势</h4><p class="sub">大考成绩折线 · ${U.scoresHis.length} 次记录</p>
-    <div style="margin-top:8px">${lineChart(U.scoresHis, 340, 180)}</div>
-  </div>
+  const history=myScoreHistory();
+  const subjects=scoreTrendSubjects(history);
+  return head('成绩趋势')+`
+  <section class="card my-trend-card">
+    <div class="my-trend-heading"><h4>历次成绩走势</h4><select class="input" aria-label="查看总分或科目" onchange="updateScoreTrend(this)">
+      <option value="">总分</option>${subjects.map((name,index)=>`<option value="${index+1}">${myText(name)}</option>`).join('')}
+    </select></div>
+    <div id="my-score-trend" aria-live="polite">${scoreTrend(history,'')}</div>
+  </section>
   <div class="card"><h4>历次成绩</h4>
-    ${U.scoresHis.slice().reverse().map(s=>`<div class="cell"><div class="ct"><b>${s.m}</b><small>总分 100 · 年级排名 ${120-s.v} 名</small></div><b style="font-size:17px;color:var(--blue)">${s.v}</b></div>`).join('')}
+    ${history.slice().reverse().map(exam=>`<div class="cell"><div class="ct"><b>${myText(exam.m)}</b><small>满分 100${exam.demo?' · 示例':''}</small></div><b>${exam.v}</b></div>`).join('')||'<div class="empty">暂无成绩记录</div>'}
   </div>
   <button class="btn lite" onclick="openScoreInput()">录入新成绩</button>`;
 }
@@ -1573,9 +2449,10 @@ function openScoreInput(){
 }
 function saveScore(){
   const n=document.getElementById('sc-name').value.trim()||'最新考试';
-  const v=+document.getElementById('sc-val').value;
-  if(!v||v<0||v>100){ toast('请输入 0-100 的分数'); return; }
-  U.scoresHis.push({m:n, v}); closeModal(); refresh(); toast('成绩已录入，学情档案已更新');
+  const score=document.getElementById('sc-val').value.trim();
+  const v=Number(score);
+  if(!score||!Number.isFinite(v)||v<0||v>100){ toast('请输入 0-100 的分数'); return; }
+  U.scoresHis.push({m:n, v, demo:false}); closeModal(); refresh(); toast('成绩已录入，学情档案已更新');
 }
 function pageWrong(){
   const wrongs=S.records.filter(r=>!r.ok);
@@ -1591,15 +2468,53 @@ function pageWrong(){
     ${Object.keys(kpCount).length?Object.entries(kpCount).map(([k,c])=>`<div class="sbar"><div class="srow"><b>${k}</b><div class="track"><i style="width:${c/Math.max(...Object.values(kpCount))*100}%;background:linear-gradient(90deg,#FF9F3A,#F25C54)"></i></div><span>${c} 题</span></div></div>`).join(''):'<div class="empty">没有错题，继续保持！</div>'}
   </div>
   <div class="card"><h4>错题列表</h4>
-    ${wrongs.length?wrongs.map(r=>{ const q=Q.find(x=>x.id===r.q);
-      return `<div class="cell" onclick="S.idx=Q.findIndex(x=>x.id===${r.q});pushPage(pageAnalysis)"><div class="ci" style="background:var(--red-bg);color:#E4574F">${IC.pen}</div><div class="ct"><b>${q?q.stem.slice(0,14)+'…':'第 '+r.q+' 题'}</b><small>${r.d} · ${r.kp}${r.re?' · 已重做':''}</small></div><button class="btn sm lite" onclick="event.stopPropagation();markRedo(${r.q})">重做</button></div>`;}).join('')
-    :'<div class="empty">太棒了，暂无错题！</div>'}
+    ${wrongQuestionRows(wrongs)}
   </div>`;
 }
-function markRedo(qid){
-  const r=S.records.find(x=>x.q===qid);
-  if(r && !r.re){ r.re=true; toast('已加入重做队列，完成解析后自动更新'); refresh(); }
-  else toast('该题已在重做队列中');
+function wrongQuestionRows(wrongs,fullQuestion=false){
+  if(!wrongs.length) return '<div class="empty">太棒了，暂无错题！</div>';
+  return wrongs.map(record=>{
+    const index=Q.findIndex(question=>question.id===record.q);
+    const stem=Q[index]?.stem;
+    const text=!stem?'第 '+record.q+' 题':fullQuestion?stem:stem.slice(0,20)+'…';
+    const description=`<span class="ct"><b>${myText(text)}</b><small>${myText(record.d)} · ${myText(record.kp)}${record.re?' · 已重做':''}</small></span>`;
+    const question=index<0?description:`<button type="button" class="my-wrong-question" onclick="S.idx=${index};pushPage(pageAnalysis)">${description}</button>`;
+    return `<div class="cell"><div class="ci wrong-type-icon" aria-hidden="true">${IC.pen}</div>${question}
+      ${index<0?'':`<button type="button" class="btn sm lite" onclick="startWrongRedo(${Q[index].id})">重做</button>`}</div>`;
+  }).join('');
+}
+let wrongRedoAttempt;
+function startWrongRedo(qid){
+  const index=Q.findIndex(question=>question.id===qid);
+  if(index<0||!S.records.some(record=>record.q===qid&&!record.ok)) return;
+  wrongRedoAttempt={idx:index,ans:{},m:'text'};
+  pushPage(pageWrongRedo);
+}
+function pageWrongRedo(){
+  const draft=wrongRedoAttempt;
+  const q=Q[draft.idx];
+  return head('错题重做',`<div class="capture-question-actions">${captureQuestionButton('答题')}</div>`)+`
+    <div class="qbar">${q.type==='single'?'单选题':q.type==='fill'?'填空题':'解答题'} · ${q.kp}</div>
+    <div class="stem">${q.stem}</div>
+    ${examAnswerFields(q,draft)}
+    <div style="margin-top:16px"><button type="button" class="btn" onclick="submitWrongRedo()">提交答案</button></div>`;
+}
+function submitWrongRedo(){
+  const draft=wrongRedoAttempt;
+  const q=Q[draft.idx];
+  const answer=draft.ans[q.id];
+  if(!q.opts&&draft.m!=='text'){ toast('请使用文字输入提交评分'); return; }
+  if(q.opts?answer===undefined:!String(answer??'').trim()){
+    toast(q.opts?'请选择答案':'请填写答案');
+    return;
+  }
+  const record=S.records.find(item=>item.q===q.id&&!item.ok);
+  if(record&&questionIsCorrect(q,answer)) record.re=true;
+  replacePage(pageWrongRedoAnalysis);
+}
+function pageWrongRedoAnalysis(){
+  const {idx,ans}=wrongRedoAttempt;
+  return renderQuestionAnalysis(idx,ans[Q[idx].id],'<button type="button" class="btn" onclick="popPage()">返回错题记录</button>');
 }
 
 /* ================= 教材 / 资料 ================= */
@@ -1709,30 +2624,61 @@ function pageQaHistory(){
 }
 
 /* ================= 规划之路 ================= */
+const STUDY_PLAN_WEEKS=[['第 1 周','补几何漏洞：圆的证明专项（配套教材第 1-3 篇）','done'],['第 2 周','化学方程式配平 + 每日 20 分钟早读','done'],['第 3 周','数学压轴题突破 + 周六直播串讲','doing'],['第 4 周','全真模考 2 轮 + 考前心态调整','todo']];
+const CURRENT_WEEK_TASKS=[
+  ['压轴题基础练习','数学 · 二次函数综合','done',IC.check],
+  ['数学压轴题突破','数学 · 圆的证明与综合题','doing',IC.pen],
+  ['周六直播串讲','本周重点题型','todo',IC.plan]
+];
+function studyPlanStatus(status){
+  return `<span class="sd-pill ${status}">${{done:'已完成',doing:'进行中',todo:'待开始'}[status]}</span>`;
+}
+function studyPlanContent(selected){
+  const current=STUDY_PLAN_WEEKS.findIndex(([, ,state])=>state==='doing');
+  const today=new Date();
+  today.setDate(today.getDate()+7*(selected-current));
+  const week=studyWeekDays(today);
+  const [title,task,status]=STUDY_PLAN_WEEKS[selected];
+  const isCurrent=selected===current;
+  const tasks=isCurrent?CURRENT_WEEK_TASKS:[[task,'',status,status==='done'?IC.check:IC.plan]];
+  const completed=STUDY_PLAN_WEEKS.filter(([, ,state])=>state==='done').length;
+  return `<div class="sd-plan-banner"><div><h2>30 天冲刺方案</h2><p>${title} · ${studyShortDate(week[0])} – ${studyShortDate(week[6])} · 示例</p></div>
+    <div><b>${completed} / ${STUDY_PLAN_WEEKS.length}</b><p>已完成周数</p></div></div>
+    <div class="sd-weeks" role="group" aria-label="查看各周计划">${STUDY_PLAN_WEEKS.map(([name,,state],index)=>
+      `<button type="button" data-study-week="${index}" aria-pressed="${selected===index}" onclick="selectStudyPlanWeek(${index})"><b>${name}</b>${studyPlanStatus(state)}</button>`
+    ).join('')}</div>
+    <div class="sd-split">
+      <section class="sd-card"><div class="sd-heading"><h2>${isCurrent?'本周':title}任务</h2><span>已完成 ${tasks.filter(([, ,state])=>state==='done').length} / ${tasks.length}</span></div>
+      ${tasks.map(([name,description,state,icon])=>`<div class="sd-task"><span class="sd-icon" aria-hidden="true">${icon}</span><div><b>${name}</b>${description?`<small>${description}</small>`:''}</div>${studyPlanStatus(state)}</div>`).join('')}
+      </section>
+      <div class="sd-stack">
+        <section class="sd-card"><div class="sd-heading"><h2>${isCurrent?'本周':title}重点</h2></div>
+          <div class="sd-task"><span class="sd-icon" aria-hidden="true">${IC.plan}</span><div><b>${isCurrent?'数学压轴题突破':task}</b>${isCurrent?'<small>练习综合题，在周六串讲中复盘解题步骤。</small>':''}</div></div>
+        </section>
+        <section class="sd-card"><div class="sd-heading"><h2>规划师跟进</h2><button type="button" class="btn sm lite" onclick="toast('已提醒规划师，将按约定时间致电')">提醒</button></div>
+          <div class="sd-follow"><b>李规划师</b><span>下次回访 · 周四 19:00</span></div>
+        </section>
+      </div>
+    </div>`;
+}
+function selectStudyPlanWeek(index){
+  const detail=document.getElementById('study-plan-detail');
+  detail.innerHTML=studyPlanContent(index);
+  detail.querySelector(`[data-study-week="${index}"]`)?.focus({preventScroll:true});
+}
 function pagePlan(){
-  return head('规划之路')+`
-  <div class="card" style="background:linear-gradient(135deg,#6A5CFF,#3D7EFF);border:0;color:#fff">
-    <b style="font-size:16px">AI 课程规划 · 30 天冲刺方案</b>
-    <p style="font-size:12px;opacity:.85;margin-top:4px">基于测评报告 + 目标考试时间自动生成</p>
-  </div>
-  <div class="card"><h4>规划时间线</h4>
-    ${[['第 1 周','补几何漏洞：圆的证明专项（配套教材第 1-3 篇）','done'],['第 2 周','化学方程式配平 + 每日 20 分钟早读','done'],['第 3 周','数学压轴题突破 + 周六直播串讲','doing'],['第 4 周','全真模考 2 轮 + 考前心态调整','todo']].map(([w,t,st],i)=>`
-    <div class="cell"><div class="ci" style="background:${st==='done'?'var(--green-bg)':st==='doing'?'var(--blue-bg)':'#F1F2F5'};color:${st==='done'?'#27A566':st==='doing'?'var(--blue)':'#9AA3B0'}">${st==='done'?IC.check:st==='doing'?IC.clock:IC.plan}</div>
-    <div class="ct"><b>${w}</b><small>${t}</small></div><span class="tag ${st==='done'?'green':st==='doing'?'blue':'gray'}">${st==='done'?'已完成':st==='doing'?'进行中':'待开始'}</span></div>`).join('')}
-  </div>
-  <div class="card"><h4>规划师跟进</h4>
-    <div class="cell"><div class="ci" style="background:var(--orange-bg);color:#E8862C">${IC.people}</div><div class="ct"><b>李规划师 · 每周致电回访</b><small>下次回访：周四 19:00（可修改）</small></div><button class="btn sm lite" onclick="toast('已提醒规划师，将按约定时间致电')">提醒</button></div>
-  </div>`;
+  const current=STUDY_PLAN_WEEKS.findIndex(([, ,state])=>state==='doing');
+  return head('学习计划详情')+`<div class="study-detail" id="study-plan-detail">${studyPlanContent(current)}</div>`;
 }
 
 /* ================= 左侧导航 ================= */
 const MODS=[
   ['M1 注册建档','验证码登录 → 完善信息（建档）→ 退出登录', 'login'],
-  ['M2 课程学习','三种课程 → 各自科目课程列表 → 选科目输激活码 JQ2026 → 完善个人信息/自评/学情 3 步 → AI 课程规划', 'courses'],
+  ['M2 课程学习','三种课程 → 各自科目课程列表 → 选科目输激活码 JQ2026 → 教材与学校进度 → 薄弱点摸底或直接看课', 'courses'],
   ['M3 练习测评','试卷 → 答题（三种作答）→ 解析 → 答题卡日历', 'practice'],
   ['M3 AI 测评','测评命题 → 作答 → AI 报告（雷达图/漏洞）', 'aitest'],
   ['M4 答疑服务','AI 先行答疑 → 一键转人工 → 答疑记录', 'qa'],
-  ['M5 学情伴学','学习打卡 / 学习记录 / 成绩总览 / 学生档案', 'discover'],
+  ['M5 学情伴学','学习打卡 / 学习记录 / 成绩总览 / 学生档案', 'me'],
   ['首页主控台','轮播 / 快捷入口 / 课程表 / 三维一体 / 教程', 'home'],
 ];
 document.getElementById('mods').innerHTML = MODS.map((m,i)=>{
@@ -1745,10 +2691,9 @@ function demoNav(k){
   if(!U.logged){ demoStart(); toast('请先登录（验证码 1234）'); return; }
   if(k==='courses') goTab('courses');
   else if(k==='qa') goTab('qa');
-  else if(k==='discover') goTab('discover');
+  else if(k==='me') goTab('me');
   else if(k==='home') goTab('home');
-  else if(k==='practice'){ goTab('discover'); pushPage(pagePapers); }
-  else if(k==='aitest'){ goTab('home'); pushPage(pageAiTest); }
+  else if(k==='practice'||k==='aitest') openSidePage('discover','pagePapers');
 }
 
 /* ---------- 启动 ---------- */
@@ -1770,25 +2715,53 @@ const TAB_NAMES={home:'首页',discover:'发现',qa:'在线答疑',me:'我的'};
 const $id=id=>document.getElementById(id);
 
 /* ---------- 本机状态持久化（纯前端，无后端） ---------- */
+let demoResetSnapshot;
 function persist(){
-  try{ localStorage.setItem(STORE_KEY, JSON.stringify({U,S,CHAT})); }catch(e){}
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(demoResetSnapshot||{U,S,CHAT})); }catch(e){}
 }
 function restore(){
   try{
     const raw=localStorage.getItem(STORE_KEY); if(!raw) return;
     const d=JSON.parse(raw);
     if(d.U) Object.assign(U,d.U);
+    const oldLessonIds=['factor','equation','quadratic','circle','probability','translation','chord'];
+    for(const [key,study] of Object.entries(U.courseStudy)){
+      if(!key.endsWith('|中考|数学')) continue;
+      if(typeof study.schoolLesson==='number'){
+        study.lesson??=oldLessonIds[study.schoolLesson];
+        study.chapterOnly??=study.schoolChapterOnly;
+      }
+      if(typeof study.lastLesson==='number') study.playing??=oldLessonIds[study.lastLesson];
+      if(typeof study.result?.lesson==='number'){
+        const id=oldLessonIds[study.result.lesson];
+        study.result=id?{...study.result,lesson:id}:null;
+      }
+    }
     if(d.S) Object.assign(S,d.S);
     if(d.CHAT && Array.isArray(d.CHAT.msgs)) CHAT.msgs=d.CHAT.msgs;
   }catch(e){}
 }
 function resetDemo(){
-  try{ localStorage.removeItem(STORE_KEY); }catch(e){}
+  const key=U.activatedSubjects.includes(U.activeSubject)
+    ? U.activeSubject
+    : U.activatedSubjects[0]||subKey('skill','中考','数学');
+  const [course,identity]=key.split('|');
+  demoResetSnapshot={U:{
+    activated:true,
+    activeCourse:course,
+    activeSubject:key,
+    activatedCourses:[course],
+    activatedSubjects:[key],
+    identity,
+    grade:identity==='高考'?'高三':'初三',
+  }};
+  persist();
   location.hash=''; location.reload();
 }
 
 /* ---------- 登录分屏 / 应用外壳切换 ---------- */
 function setAuth(on){
+  topAccountMenu.open=false;
   document.body.classList.toggle('is-auth',!!on);
   if(!on) updateChrome();
 }
@@ -1803,11 +2776,10 @@ function updateChrome(){
 /* ---------- 面包屑 ---------- */
 function updateCrumb(title,parent){
   const box=$id('crumb'); if(!box) return;
-  const back='<button class="crumb-back" title="返回上一页" onclick="popPage()"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>';
-  box.innerHTML=back+'<span class="crumb-root">'+parent+'</span><span class="crumb-sep">/</span><b>'+title+'</b>';
-  const hasContentBack = stack.length > 0 && !!screen.querySelector('.page > .hd .backbtn, .page > .setup-topbar .sb');
-  box.classList.toggle('has-back',stack.length>0 && !hasContentBack);
-  box.classList.toggle('context-only',hasContentBack);
+  const nested=stack.length>0;
+  $id('pageBack').hidden=!nested;
+  box.innerHTML='<span class="crumb-root">'+parent+'</span><span class="crumb-sep" aria-hidden="true">/</span><b aria-current="page">'+title+'</b>';
+  box.classList.toggle('context-only',nested&&!!screen.querySelector('.page > .hd,.page > .setup-topbar'));
 }
 function titleFromHTML(html){
   let m=html.match(/class="st-ttl"[\s\S]*?<b>([^<]+)<\/b>/);
@@ -1824,7 +2796,7 @@ function layoutOf(html,cls){
   if(cls==='page-chat'||html.indexOf('chatwrap')>=0) return 'chat';
   if(html.indexOf('setup-topbar')>=0) return 'setup';
   if(html.indexOf('class="stem"')>=0||html.indexOf('class="opt')>=0) return 'narrow';
-  if(html.indexOf('act-cover')>=0||html.indexOf('tdgrid')>=0||html.indexOf('id="ob-name"')>=0) return 'narrow';
+  if(html.indexOf('act-cover')>=0||html.indexOf('tdgrid')>=0) return 'narrow';
   if(html.indexOf('class="cal"')>=0||html.indexOf('试听模式')>=0) return 'narrow';
   return 'grid';
 }
@@ -1839,29 +2811,34 @@ setHTML=function(html,cls){
   const p=document.querySelector('#screen .page');
   if(p){
     p.classList.add('layout-'+layoutOf(html,cls));
-    const current=stack[stack.length-1];
-    if([pageQaHistory,pageStudyLog,pageArchive,pageEditInfo,pageScores,pageWrong,pageCalendar,pageCheckin].includes(current)) p.classList.add('personal-detail');
-    if(current===pageStudyLog) p.classList.add('detail-study');
+    const current=stack[stack.length-1]||sidePageRoot?.render;
+    if(current===pageSetup1) p.classList.add('setup-step-one');
+    if(current===pageSetup2) p.classList.add('study-setup');
+    if([pageQaHistory,pageArchive,pageEditInfo,pageScores,pageWrong,pageCalendar,pageCheckin].includes(current)) p.classList.add('personal-detail');
+    if([pageStudyLog,pagePlan,pageSetupTime].includes(current)) p.classList.add('study-detail-page');
     if(current===pageArchive) p.classList.add('detail-archive');
-    if([pagePapers,pageTextbook,pageMaterials,pageAiTest].includes(current)) p.classList.add('discover-detail');
+    if([pagePapers,pageAiAssessment,pageTextbook,pageMaterials].includes(current)) p.classList.add('discover-detail');
     if(current===pagePapers) p.classList.add('detail-papers');
     if(current===pageTextbook) p.classList.add('detail-book');
     if(current===pageMaterials) p.classList.add('detail-materials');
-    if(current===pageAiTest) p.classList.add('detail-ai');
     if(current===pageCoursePlay) p.classList.add('course-player-page');
   }
   updateCrumb(titleFromHTML(html),TAB_NAMES[curTab]||'考试大师');
   updateChrome();
   persist();
 };
-goTab=function(name){
+goTab=function(name,root=null){
   if(name==='courses') name='home';
-  stack=[];navDir='fwd';curTab=name;setAuth(false);
+  const pages={home:pageHome,qa:pageQa,me:pageMe};
+  const render=root?.render||pages[name];
+  if(!render) return;
+  stack=[];parentScroll.length=0;sidePageRoot=root;navDir='fwd';curTab=name;setAuth(false);
   if(name==='discover') setOpenSideGroup(name);
   tabbar.querySelectorAll('.side-sub [aria-current]').forEach(button=>button.removeAttribute('aria-current'));
-  const pages={home:pageHome,discover:pageDiscover,qa:pageQa,me:pageMe};
-  setHTML(pages[name](),name==='qa'?'page-chat':'');
-  updateCrumb(TAB_NAMES[name],'考试大师');
+  root?.button?.setAttribute('aria-current','page');
+  const html=render();
+  setHTML(html,!root&&name==='qa'?'page-chat':'');
+  updateCrumb(root?titleFromHTML(html):TAB_NAMES[name],root?TAB_NAMES[name]:'考试大师');
   $id('appShell').dataset.section = name;
   tabbar.style.removeProperty('display');
   tabbar.querySelectorAll('.tb').forEach(button => {
@@ -1872,9 +2849,9 @@ goTab=function(name){
   });
   updateChrome();persist();
 };
-pushPage=function(fn,dir){
+pushPage=function(fn,dir,replacing=false){
+  if(!replacing) parentScroll[stack.length]=screen.scrollTop;
   navDir=dir||'fwd';stack.push(fn);setAuth(false);
-  tabbar.querySelectorAll('.side-sub [aria-current]').forEach(button=>button.removeAttribute('aria-current'));
   delete $id('appShell').dataset.section;
   const html=fn();
   setHTML(html);
@@ -1885,12 +2862,14 @@ pushPage=function(fn,dir){
 
 /* 登录态总入口：未登录 → 分屏登录页；已登录 → 应用首页 */
 demoStart=function(){
-  stack=[];curTab='home';navDir='fwd';closeModal();
+  stack=[];sidePageRoot=null;curTab='home';navDir='fwd';closeModal();
   tabbar.querySelectorAll('.tb').forEach(b=>b.classList.remove('on'));
   if(U.logged){ setAuth(false); goTab('home'); return; }
   setAuth(true);
-  const card=$id('authCard');
-  if(card) card.innerHTML=pageLogin();
+  onboarding=null;
+  $id('authStage').removeAttribute('data-step');
+  $id('authTitle').textContent='验证码登录';
+  $id('authCard').innerHTML=pageLogin();
   updateChrome();
 };
 
@@ -1913,18 +2892,16 @@ tabbar.querySelectorAll('[data-side-group] .side-category').forEach(button=>{
   });
 });
 
-/* 侧栏二级入口沿用各栏目原有导航路径 */
+/* 侧栏二级菜单直接打开栏目首页 */
 function openSidePage(tab,page){
-  goTab(tab);
   const pages={
-    pagePapers,pageAiTest,pageCheckin,pageLive,pageTextbook,pageMaterials,
+    pagePapers,pageCheckin,pageLive,pageTextbook,pageMaterials,
     pageArchive,pageScores,pageWrong
   };
-  if(pages[page]){
-    pushPage(pages[page]);
-    const button=document.querySelector('[data-side-page="'+page+'"]');
-    if(button) button.setAttribute('aria-current','page');
-  }
+  const render=pages[page];
+  if(!render) return;
+  const button=tabbar.querySelector('[data-side-page="'+page+'"]');
+  goTab(tab,{render,button});
 }
 
 /* 选中背景使用同一个图层，切换时由当前动画位置继续。 */
@@ -1959,18 +2936,17 @@ tabbar.addEventListener('click',scheduleSideIndicator);
 tabbar.classList.add('has-indicator');
 scheduleSideIndicator();
 
-const sidebarToggle = $id('sideToggle');
-const sidebarMedium = matchMedia('(max-width: 999px)');
+const sidebar = $id('sidebar');
+const sidebarDesktop = matchMedia('(min-width: 681px)');
 function setSidebarCompact(compact){
   $id('appShell').classList.toggle('sidebar-compact', compact);
-  sidebarToggle.setAttribute('aria-expanded', String(!compact));
-  sidebarToggle.title = compact ? '展开侧边栏' : '收起侧边栏';
-  sidebarToggle.setAttribute('aria-label', sidebarToggle.title);
 }
-setSidebarCompact(sidebarMedium.matches);
-sidebarMedium.addEventListener('change', event => setSidebarCompact(event.matches));
-sidebarToggle.addEventListener('click', () => {
-  setSidebarCompact(sidebarToggle.getAttribute('aria-expanded') === 'true');
+sidebarDesktop.addEventListener('change', () => setSidebarCompact(true));
+sidebar.addEventListener('pointerenter', event => {
+  if(sidebarDesktop.matches && event.pointerType === 'mouse') setSidebarCompact(false);
+});
+sidebar.addEventListener('pointerleave', event => {
+  if(sidebarDesktop.matches && event.pointerType === 'mouse') setSidebarCompact(true);
 });
 
 const authStage = $id('authStage');
@@ -1982,47 +2958,6 @@ authThemes.forEach(button => {
   });
 });
 
-/* ---------- 顶栏搜索（纯前端页面索引） ---------- */
-const SEARCH_ITEMS=[
-  {t:'首页主控台',d:'轮播 · 快捷入口 · 专属课程表',k:'首页 home 主控台 课程表',run:()=>goTab('home')},
-  {t:'首页课程列表',d:'三种课程 · 查看科目 · 激活',k:'课程中心 课程 courses 技巧课 课课通',run:()=>goTab('home')},
-  {t:'技巧课科目列表',d:'按升学方向与招生类型筛选',k:'科目 列表 课程详情 激活',run:()=>{goTab('courses');pushPage(()=>pageCourseDetail('skill'));}},
-  {t:'课程激活',d:'输入激活码 JQ2026',k:'激活码 开通 激活课程',run:()=>{goTab('courses');pushPage(()=>pageCourseDetail('skill'));toast('点任一科目卡片进入激活页');}},
-  {t:'三步信息采集',d:'完善信息 → 自我评价 → 学情提交',k:'信息采集 专属课程表 setup',run:()=>{U.activated=true;if(!U.setupStep)U.setupStep=1;goTab('courses');pushPage(SETUP_PAGES[U.setupStep]||pageSetup1);}},
-  {t:'课程播放',d:'5 章 41 讲 · 章节列表',k:'播放 章节 视频 课程学习',run:()=>{goTab('courses');pushPage(pageCoursePlay);}},
-  {t:'直播课堂',d:'每月 4 次 · 支持回放',k:'直播 回放 预约',run:()=>{goTab('home');pushPage(pageLive);}},
-  {t:'AI 测评',d:'测评命题 · 作答 · AI 报告',k:'AI 测评 雷达图 知识漏洞',run:()=>{goTab('home');pushPage(pageAiTest);}},
-  {t:'试卷',d:'模拟 / 同步 / 区域测试卷',k:'试卷 答题 练习 题库',run:()=>{goTab('discover');pushPage(pagePapers);}},
-  {t:'答题卡日历',d:'打卡日期 · 已练科目进度',k:'答题记录 日历 进度',run:()=>{goTab('discover');pushPage(pageCalendar);}},
-  {t:'错题记录',d:'错题归档 · 考点统计 · 重做',k:'错题 考点 重做',run:()=>{goTab('discover');pushPage(pageWrong);}},
-  {t:'成绩总览',d:'成绩走势 · 录入新成绩',k:'成绩 分数 折线 排名',run:()=>{goTab('discover');pushPage(pageScores);}},
-  {t:'学习打卡',d:'上传学习内容与照片',k:'打卡 图片 每日',run:()=>{goTab('discover');pushPage(pageCheckin);}},
-  {t:'学习记录',d:'今日 / 本周 / 累计学时',k:'学时 时长 记录',run:()=>{goTab('discover');pushPage(pageStudyLog);}},
-  {t:'学生档案',d:'基本信息 · 管理记录 · 走势',k:'档案 信息 学校 年级',run:()=>{goTab('me');pushPage(pageArchive);}},
-  {t:'修改信息',d:'年级 / 学校 / 每日学习时长',k:'修改 资料 设置',run:()=>{goTab('me');pushPage(pageEditInfo);}},
-  {t:'个性化教材',d:'30 篇 AI 定制讲义',k:'教材 讲义 打印',run:()=>{goTab('discover');pushPage(pageTextbook);}},
-  {t:'资料领取',d:'全科资料库 · 真题 · 学霸手册',k:'资料 领取 邮寄',run:()=>{goTab('discover');pushPage(pageMaterials);}},
-  {t:'规划之路',d:'30 天冲刺时间线 · 规划师跟进',k:'规划 计划 时间线',run:()=>{goTab('home');pushPage(pagePlan);}},
-  {t:'在线答疑',d:'AI 先行答疑 · 一键转人工',k:'答疑 提问 AI 人工',run:()=>goTab('qa')},
-  {t:'答疑记录',d:'历史答疑留痕',k:'答疑 记录 历史',run:()=>{goTab('qa');pushPage(pageQaHistory);}},
-  {t:'我的',d:'学时 / 做题数 / 打卡天数',k:'我的 个人中心 退出登录',run:()=>goTab('me')},
-];
-let _searchList=[];
-function renderSearch(q){
-  const box=$id('searchResults'); if(!box) return;
-  q=(q||'').trim().toLowerCase();
-  if(!q){ box.classList.remove('show'); box.innerHTML=''; return; }
-  _searchList=SEARCH_ITEMS.filter(x=>(x.t+x.d+x.k).toLowerCase().indexOf(q)>=0).slice(0,8);
-  box.innerHTML=_searchList.length?_searchList.map((x,i)=>'<button onclick="runSearch('+i+')"><i>'+(i+1)+'</i><span>'+x.t+'<small>'+x.d+'</small></span></button>').join(''):'<div class="sr-empty">没有找到相关页面</div>';
-  box.classList.add('show');
-}
-function runSearch(i){
-  const it=_searchList[i]; if(!it) return;
-  const box=$id('searchResults'),inp=$id('searchInput');
-  if(box) box.classList.remove('show');
-  if(inp) inp.value='';
-  it.run();
-}
 function openNotifications(){
   openModal(`<h4>消息通知</h4><p class="sub" style="margin-top:4px">最近 7 天的服务提醒</p>
     <div class="list" style="margin-top:14px;padding:0 12px">
@@ -2033,6 +2968,11 @@ function openNotifications(){
     <button class="btn" style="margin-top:14px" onclick="closeModal()">知道了</button>`);
 }
 
+const topAccountMenu=$id('topAccountMenu');
+document.addEventListener('click',event=>{
+  if(topAccountMenu.open&&!topAccountMenu.contains(event.target)) topAccountMenu.open=false;
+});
+
 /* ---------- 键盘快捷键 ---------- */
 document.addEventListener('keydown',e=>{
   const tag=(e.target&&e.target.tagName)||'';
@@ -2040,22 +2980,17 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
     const root=$id('modal-root');
     if(root&&root.classList.contains('show')) closeModal();
-    else if($id('searchResults')) $id('searchResults').classList.remove('show');
-    else if(!typing&&stack.length) popPage();
+    else if(topAccountMenu.open){
+      topAccountMenu.open=false;
+      topAccountMenu.querySelector('summary').focus();
+    }
+    else if(!typing&&stack.length) goBack();
     return;
   }
-  if(e.key==='/'&&!typing){ e.preventDefault(); const i=$id('searchInput'); if(i) i.focus(); }
-  if(e.altKey&&e.key==='ArrowLeft'&&stack.length){ e.preventDefault(); popPage(); }
+  if(e.altKey&&e.key==='ArrowLeft'&&stack.length){ e.preventDefault(); goBack(); }
 });
-document.addEventListener('click',e=>{
-  const box=$id('searchResults');
-  if(box && !e.target.closest('.searchbox')) box.classList.remove('show');
-});
-
 /* ---------- 启动（在原型启动脚本之后执行，接管外壳） ---------- */
 (function boot(){
-  const si=$id('searchInput');
-  if(si) si.addEventListener('input',e=>renderSearch(e.target.value));
   restore();
   U.logged=false;
   demoStart();

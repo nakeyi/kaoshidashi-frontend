@@ -6,24 +6,25 @@
 <title>考试大师 · 网页版</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%233D7EFF'/%3E%3Cpath d='M21 7 10 22h7l-2 11 12-15h-7z' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="capture-question.css">
 </head>
 <body class="is-auth">
 
 <!-- ==================== 登录 / 注册分屏 ==================== -->
 <div class="auth-stage" id="authStage" data-theme="campus">
+  <div class="auth-masthead">
+    <span class="auth-masthead-logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 3 6 13.5h5L10 21l8-11h-5.5z"/></svg></span>
+    <span>考试大师</span>
+  </div>
   <div class="auth-switch" role="group" aria-label="切换登录页样式">
     <button type="button" data-auth-theme="campus" aria-pressed="true">校园插画</button>
     <button type="button" data-auth-theme="desk" aria-pressed="false">沉浸书桌</button>
     <button type="button" data-auth-theme="student" aria-pressed="false">3D 学习人物</button>
   </div>
   <div class="auth-layout">
-    <section class="auth-brand" aria-label="考试大师">
-      <div class="auth-brand-inner">
-        <p class="auth-brand-name">考试大师</p>
-        <h1>把每一次练习，<br>都变成确定的进步。</h1>
-      </div>
-    </section>
-    <section class="auth-panel" aria-label="登录">
+    <div class="auth-brand" aria-hidden="true"></div>
+    <section class="auth-panel" aria-labelledby="authTitle">
+      <h2 class="auth-form-title" id="authTitle" tabindex="-1">验证码登录</h2>
       <div class="auth-card" id="authCard"></div>
       <p class="auth-tip">演示账号：任意 11 位手机号 + 验证码 <b>1234</b> · 课程激活码 <b>JQ2026</b></p>
     </section>
@@ -31,7 +32,7 @@
 </div>
 
 <!-- ==================== 应用主体 ==================== -->
-<div class="app-shell" id="appShell">
+<div class="app-shell sidebar-compact" id="appShell">
 
   <aside class="sidebar" id="sidebar">
     <div class="brand">
@@ -46,14 +47,13 @@
           <button type="button" class="side-category" aria-expanded="true" aria-controls="side-sub-discover"><svg class="side-category-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M15 9l-2 4.5L8.5 15l2-4.5z"/></svg><span>发现</span><svg class="side-category-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button>
         </div>
         <div class="side-sub" id="side-sub-discover">
-          <button type="button" data-side-page="pagePapers" onclick="openSidePage('discover','pagePapers')">试卷</button>
-          <button type="button" data-side-page="pageTextbook" onclick="openSidePage('discover','pageTextbook')">个性化教材</button>
-          <button type="button" data-side-page="pageMaterials" onclick="openSidePage('discover','pageMaterials')">资料领取</button>
-          <button type="button" data-side-page="pageAiTest" onclick="openSidePage('discover','pageAiTest')">AI 测评</button>
+          <button type="button" data-side-page="pagePapers" onclick="openSidePage('discover','pagePapers')"><svg class="side-sub-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></svg><span>试卷</span></button>
+          <button type="button" data-side-page="pageTextbook" onclick="openSidePage('discover','pageTextbook')"><svg class="side-sub-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6C9 4 6 4 3 5v13c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1Zm0 0v13"/></svg><span>个性化教材</span></button>
+          <button type="button" data-side-page="pageMaterials" onclick="openSidePage('discover','pageMaterials')"><svg class="side-sub-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 10v6m-2-2 2 2 2-2"/></svg><span>资料领取</span></button>
         </div>
       </div>
-      <button class="tb" data-tab="qa" aria-label="在线答疑" title="在线答疑" onclick="goTab('qa')"><svg viewBox="0 0 24 24"><path d="M4 6h16v11H9l-5 4z"/><path d="M8.5 10h7M8.5 13h4"/></svg><span>在线答疑</span></button>
-      <button class="tb" data-tab="me" aria-label="我的" title="我的" onclick="goTab('me')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 13.5c1 1.4 2.2 2 3.5 2s2.5-.6 3.5-2"/><path d="M9 9.5h.01M15 9.5h.01"/></svg><span>我的</span></button>
+      <a class="tb" href="qa.html" target="_blank" rel="noopener" aria-label="AI 问答（在新标签页打开）" title="AI 问答" style="text-decoration:none"><svg viewBox="0 0 24 24"><path d="M4 6h16v11H9l-5 4z"/><path d="M10 10a2 2 0 1 1 3.3 1.5c-.8.5-1.3.8-1.3 1.5m0 1.7h.01"/></svg><span>AI 问答</span></a>
+      <button class="tb" data-tab="me" aria-label="我的" title="我的" onclick="goTab('me')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1a7 7 0 0 1 14 0v1"/></svg><span>我的</span></button>
     </nav>
 
     <details class="side-demo">
@@ -71,21 +71,22 @@
   <div class="main-col">
     <header class="topbar">
       <div class="top-location">
-        <button type="button" class="icon-btn side-toggle" id="sideToggle" aria-controls="sidebar" aria-expanded="true" aria-label="收起侧边栏" title="收起侧边栏">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14"/></svg>
+        <button type="button" class="page-back" id="pageBack" aria-label="返回上一页" hidden onclick="goBack()">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>返回</span>
         </button>
         <div class="crumb" id="crumb"><span class="crumb-root">考试大师</span><span class="crumb-sep">/</span><b>首页</b></div>
       </div>
       <div class="top-actions">
-        <div class="searchbox">
-          <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg>
-          <input id="searchInput" placeholder="搜索页面、课程、功能…" autocomplete="off">
-          <kbd>/</kbd>
-          <div class="search-results" id="searchResults"></div>
-        </div>
         <span class="top-clock" id="clock"></span>
         <button class="icon-btn" title="通知" onclick="openNotifications()"><svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10 20a2 2 0 0 0 4 0"/></svg><i></i></button>
-        <button class="user-chip" onclick="goTab('me')"><span class="user-av" id="topAvatar">张</span><span class="user-nm" id="topName">张真同学</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+        <button type="button" class="icon-btn top-checkin" title="打卡" aria-label="打卡" onclick="pushPage(pageCheckin)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="14" rx="2"/><path d="M8 4v4m8-4v4M4 10h16m-11 5 2 2 4-4"/></svg><span>打卡</span></button>
+        <details class="top-account" id="topAccountMenu">
+          <summary class="user-chip" aria-label="账号菜单"><span class="user-av" id="topAvatar">张</span><span class="user-nm" id="topName">张真同学</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+          <div class="top-account-actions">
+            <button type="button" onclick="goTab('me')">我的</button>
+            <button type="button" class="top-account-logout" onclick="logout()">退出登录</button>
+          </div>
+        </details>
       </div>
     </header>
 
@@ -102,6 +103,15 @@
 <div id="toast"></div>
 <div id="modal-root" onclick="if(event.target.classList.contains('mask'))closeModal()"><div class="mask"></div><div class="sheet" id="sheet"></div></div>
 
+<dialog id="screenshot-question" aria-labelledby="screenshot-question-title">
+  <div class="screenshot-question-head">
+    <h2 id="screenshot-question-title">截屏提问</h2>
+    <button type="button" id="close-screenshot-question" aria-label="关闭截屏提问" title="关闭截屏提问">×</button>
+  </div>
+  <iframe id="screenshot-question-frame" title="AI 问答"></iframe>
+</dialog>
+
+<script src="capture-question.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

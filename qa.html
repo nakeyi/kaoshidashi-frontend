@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 问答 · 考试大师</title>
+  <link rel="stylesheet" href="qa.css">
+  <script src="qa.js" defer></script>
+</head>
+<body>
+  <div class="workspace is-start" id="workspace">
+    <aside class="history" id="history" aria-labelledby="history-title">
+      <div class="history-head">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">✦</span><span>AI 问答</span></div>
+        <button type="button" class="history-toggle" aria-controls="history-body" aria-expanded="false">答疑记录</button>
+        <button type="button" id="open-history-search" class="icon-control" aria-label="搜索答疑历史" title="搜索答疑历史" aria-haspopup="dialog" aria-controls="history-dialog"><span class="search-icon" aria-hidden="true"></span></button>
+      </div>
+      <div class="history-body" id="history-body">
+        <button type="button" id="new-question"><span aria-hidden="true">＋</span> 新提问</button>
+        <h2 id="history-title">答疑记录</h2>
+        <ol id="history-list"></ol>
+      </div>
+    </aside>
+
+    <main class="conversation" aria-label="问答对话">
+      <div class="conversation-scroll" id="conversation-scroll">
+        <section id="welcome" class="welcome">
+          <h1>这题怎么做？</h1>
+        </section>
+        <ol id="messages" class="messages" aria-label="当前对话"></ol>
+      </div>
+
+      <form id="composer" class="composer">
+        <div class="input-box">
+          <label class="sr-only" for="question">输入题目或问题</label>
+          <div id="attachment" class="attachment" hidden>
+            <img id="attachment-image" alt="题图预览" hidden>
+            <div class="attachment-details"><strong id="attachment-name"></strong><span id="attachment-size"></span></div>
+            <button type="button" id="remove-file" aria-label="移除附件" title="移除附件">×</button>
+          </div>
+          <textarea id="question" rows="2" maxlength="4000" placeholder="输入题目，或上传文件…"></textarea>
+          <div class="composer-actions">
+            <input id="question-file" type="file" accept=".jpg,.jpeg,.png,.webp,.gif,.pdf,.txt" hidden>
+            <div class="attach-actions">
+              <button type="button" id="attach-toggle" aria-label="更多操作" title="更多操作" aria-expanded="false" aria-controls="attach-menu"><span class="attach-icon" aria-hidden="true"></span></button>
+              <div id="attach-menu" class="attach-menu" aria-label="更多操作" hidden>
+                <button type="button" id="attach-file" title="图片、PDF、TXT，10 MB 以内">上传附件</button>
+                <button type="button" id="open-side-chat" aria-controls="side-chat" aria-expanded="false">侧栏问答</button>
+              </div>
+            </div>
+            <div class="solve-tools" role="group" aria-label="解题工具">
+              <div class="tool-item">
+                <button type="button" data-tool="explain" aria-pressed="false">分步解析</button>
+                <button type="button" class="clear-tool" aria-label="取消分步解析" hidden>×</button>
+              </div>
+              <div class="tool-item">
+                <button type="button" data-tool="review" aria-pressed="false">检查作答</button>
+                <button type="button" class="clear-tool" aria-label="取消检查作答" hidden>×</button>
+              </div>
+              <div class="tool-item">
+                <button type="button" data-tool="summary" aria-pressed="false">方法总结</button>
+                <button type="button" class="clear-tool" aria-label="取消方法总结" hidden>×</button>
+              </div>
+              <div class="tool-item">
+                <button type="button" data-tool="practice" aria-pressed="false">同类练习</button>
+                <button type="button" class="clear-tool" aria-label="取消同类练习" hidden>×</button>
+              </div>
+            </div>
+            <button type="submit" aria-label="发送" title="发送"><span class="send-arrow" aria-hidden="true"></span></button>
+          </div>
+        </div>
+        <p id="attachment-status" role="status" hidden></p>
+        <p id="storage-status" role="status" hidden></p>
+      </form>
+    </main>
+
+    <aside id="side-chat" class="side-chat" aria-labelledby="side-chat-title" hidden>
+      <h2 id="side-chat-title" class="sr-only">侧栏问答</h2>
+      <div class="side-chat-header">
+        <div class="side-chat-tabs" id="side-chat-tabs" role="tablist" aria-label="侧栏问答标签页"></div>
+        <button type="button" id="add-side-tab" aria-label="新建问答标签页" title="新建问答标签页">＋</button>
+        <button type="button" id="close-side-chat" aria-label="收起侧栏问答" title="收起侧栏问答">×</button>
+      </div>
+      <div class="side-chat-content" id="side-chat-content"></div>
+    </aside>
+  </div>
+  <dialog id="history-dialog" aria-label="搜索答疑历史">
+    <div class="search-head">
+      <span class="search-icon" aria-hidden="true"></span>
+      <label class="sr-only" for="history-search">搜索答疑历史</label>
+      <input type="search" id="history-search" placeholder="搜索答疑历史" autocomplete="off" autofocus>
+      <button type="button" id="close-history-search" class="icon-control" aria-label="关闭搜索" title="关闭搜索">×</button>
+    </div>
+    <div class="search-results">
+      <p id="empty-history" role="status" hidden></p>
+      <ol id="search-results-list" aria-label="搜索结果"></ol>
+    </div>
+  </dialog>
+  <p id="announcement" class="sr-only" role="status"></p>
+</body>
+</html>
